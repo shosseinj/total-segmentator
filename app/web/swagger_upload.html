@@ -1,0 +1,42 @@
+<nav dir="rtl" style="padding:16px 24px;background:#142031;color:white;font:15px Tahoma;line-height:2">
+<strong style="color:#8ee3c1">فقط دریافت HTML؛ نتیجه‌ای روی سرور نگه‌داری نمی‌شود</strong>
+<span style="margin:0 20px">POST /v1/upload/ ← نمایش مرحله‌های پردازش ← دریافت خودکار viewer.html نهایی</span>
+<div id="uploadTransfers" aria-live="polite"></div>
+</nav>
+<script>
+(()=>{'use strict';const originalFetch=window.fetch;const stages=__STAGES__;const defaultToken=__DEFAULT_TOKEN__;const number=new Intl.NumberFormat('fa-IR');
+window.segSwaggerAuthorize=ui=>{if(defaultToken)ui.preauthorizeApiKey('ServiceToken',defaultToken);};
+window.fetch=async function(input,init){
+ const address=new URL(typeof input==='string'||input instanceof URL?String(input):input.url,location.href);
+ const method=(init&&init.method||input&&input.method||'GET').toUpperCase();
+ const headers=new Headers(input instanceof Request?input.headers:undefined);if(init&&init.headers)new Headers(init.headers).forEach((value,key)=>headers.set(key,value));
+ let options=init;
+ if(defaultToken){
+  if(address.origin===location.origin&&address.pathname.startsWith('/v1/')&&!headers.has('Authorization')){headers.set('Authorization','Bearer '+defaultToken);options={...init,headers};}
+  else if(address.origin!==location.origin&&headers.get('Authorization')==='Bearer '+defaultToken){headers.delete('Authorization');options={...init,headers};}
+ }
+ if(address.origin!==location.origin||!['/v1/upload/','/v1/uploads'].includes(address.pathname)||method!=='POST')return originalFetch.call(this,input,options);
+ if(!headers.get('Idempotency-Key'))headers.set('Idempotency-Key',Array.from(crypto.getRandomValues(new Uint8Array(16)),value=>value.toString(16).padStart(2,'0')).join(''));
+ const progressHeaders=new Headers();for(const name of ['Authorization','X-Tenant-Id','X-Actor-Id','Idempotency-Key']){const value=headers.get(name);if(value)progressHeaders.set(name,value);}
+ const card=document.createElement('section');card.className='upload-transfer';card.style.cssText='margin-top:14px;padding:14px;background:#213247;border:1px solid #45617e;border-radius:10px';
+ const title=document.createElement('strong'),details=document.createElement('div'),history=document.createElement('div');history.style.cssText='font-size:12px;color:#c5d2e2';card.append(title,details,history);document.getElementById('uploadTransfers').prepend(card);
+ const started=Date.now();let stopped=false,timer=null,previousStage='',controller=null;title.textContent='دریافت فایل ZIP…';card.dataset.state='loading';
+ function show(state){const stage=state.stage||state.status;title.textContent=stages[stage]||stage;card.dataset.stage=stage;details.textContent='زمان انتظار: '+number.format(Math.floor((Date.now()-started)/1000))+' ثانیه';if(state.selected_series_index!==undefined&&state.selected_series_index!==null){const series=(state.series||[]).find(item=>item.index===state.selected_series_index);details.textContent+=' · سری '+number.format(state.selected_series_index)+(series?' · '+number.format(series.slices)+' برش':'');}if(stage!==previousStage){const item=document.createElement('span');item.textContent=(history.childNodes.length?' ← ':'')+(stages[stage]||stage);history.append(item);previousStage=stage;}}
+ async function poll(){if(stopped)return;controller=new AbortController();try{const response=await originalFetch('/v1/upload/progress',{headers:progressHeaders,cache:'no-store',signal:controller.signal});if(response.ok)show(await response.json());}catch(error){if(!stopped)details.textContent='ارتباط وضعیت موقتاً قطع شده؛ درخواست اصلی همچنان در حال اجراست.';}finally{controller=null;if(!stopped)timer=setTimeout(poll,700);}}
+ function stop(){stopped=true;if(timer)clearTimeout(timer);if(controller)controller.abort();}
+ try{
+  const pending=originalFetch.call(this,input,{...init,headers});poll();const response=await pending;
+  if(!response.ok){stop();card.dataset.state='failed';title.textContent='پردازش یا دریافت فایل انجام نشد';let reason='کد HTTP: '+response.status;try{const data=await response.clone().json();reason=data.message_fa||(typeof data.detail==='string'?data.detail:JSON.stringify(data.detail));}catch(error){}details.textContent=reason;return response;}
+  if(!(response.headers.get('Content-Type')||'').startsWith('text/html'))throw Error('پاسخ سرور فایل HTML نهایی نیست.');
+  stop();title.textContent='دریافت فایل نهایی از سرور…';const blob=await response.blob();
+  const objectUrl=URL.createObjectURL(blob),download=document.createElement('a');download.href=objectUrl;download.download='viewer.html';download.hidden=true;document.body.append(download);download.click();download.remove();setTimeout(()=>URL.revokeObjectURL(objectUrl),60000);
+  card.dataset.state='succeeded';card.dataset.stage='succeeded';title.textContent='فایل نهایی viewer.html دریافت شد';details.textContent='زمان کل: '+number.format(Math.floor((Date.now()-started)/1000))+' ثانیه';
+  const selectedIndex=response.headers.get('X-Selected-Series-Index'),selectedSlices=response.headers.get('X-Selected-Series-Slices');if(selectedIndex!==null)details.textContent+=' · سری '+number.format(Number(selectedIndex))+(selectedSlices?' · '+number.format(Number(selectedSlices))+' برش':'');details.textContent+=' · فایل را در پوشهٔ دانلودهای مرورگر باز کنید.';
+  // Keep Swagger responsive: display a small download receipt instead of
+  // rendering tens of megabytes of embedded CT data in its response panel.
+  const receipt={status:'succeeded',job_id:response.headers.get('X-Job-Id'),downloaded_file:'viewer.html',size_bytes:blob.size,message:'فایل HTML نهایی به‌صورت خودکار دریافت شد.'};
+  const displayHeaders=new Headers(response.headers);for(const name of ['Content-Length','Content-Disposition','Content-Encoding'])displayHeaders.delete(name);displayHeaders.set('Content-Type','application/json');displayHeaders.set('X-API-Response-Type','text/html');
+  return new Response(JSON.stringify(receipt),{status:response.status,headers:displayHeaders});
+ }catch(error){stop();card.dataset.state='failed';title.textContent='ارتباط با سرور یا دریافت فایل قطع شد';details.textContent='فایل‌های موقت پاک می‌شوند. برای دریافت نتیجه دوباره فایل را ارسال کنید. '+String(error);throw error;}
+};})();
+</script>

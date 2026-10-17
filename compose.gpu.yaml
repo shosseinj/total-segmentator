@@ -1,0 +1,63 @@
+name: sharif-segmentation-gpu
+x-runtime: &runtime
+  image: sharif-segmentation-gpu:2026-10-17
+  build: .
+  network_mode: host
+  env_file:
+    - path: ./connection.env
+      format: raw
+  environment:
+    SEG_SCRATCH: /work
+    SEG_MODEL_CACHE: /models
+    SEG_MR_ENABLED: "false"
+    TOTALSEG_DISABLE_USAGE_STATS: "1"
+  volumes:
+    - scratch:/work
+    - ./models:/models:ro
+  restart: unless-stopped
+x-gpu: &gpu
+  resources:
+    reservations:
+      devices:
+        - driver: nvidia
+          device_ids: ["${SEG_GPU_DEVICE:-0}"]
+          capabilities: [gpu]
+services:
+  check:
+    <<: *runtime
+    profiles: [tools]
+    command: [python, -m, tools.check, connections]
+    restart: "no"
+  check-gpu:
+    <<: *runtime
+    profiles: [tools]
+    deploy: *gpu
+    command: [python, -m, tools.check, gpu]
+    restart: "no"
+  migrate:
+    <<: *runtime
+    command: [alembic, upgrade, head]
+    restart: "no"
+  api:
+    <<: *runtime
+    command: [uvicorn, "app.main:from_env", --factory, --host, 127.0.0.1, --port, "${SEG_API_PORT:-8096}", --no-access-log]
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+  inventory:
+    <<: *runtime
+    command: [celery, -A, app.worker.celery_app, worker, -Q, inventory, --concurrency=1, --loglevel=WARNING]
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+  dispatcher:
+    <<: *runtime
+    command: [python, -m, app.worker.dispatcher]
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+  gpu-worker:
+    <<: *runtime
+    deploy: *gpu
+    command: [celery, -A, app.worker.celery_app, worker, -Q, gpu, --concurrency=1, --loglevel=WARNING]
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+volumes:
+  scratch: {}

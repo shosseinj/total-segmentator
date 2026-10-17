@@ -1,0 +1,9 @@
+# GPU image additions. Full runtime compatibility still requires the GPU acceptance test.
+TotalSegmentator==2.11.0
+torch==2.8.0
+nnunetv2==2.6.2
+SimpleITK==2.5.2
+dicom2nifti==2.6.2
+pyarrow==21.0.0
+requests==2.32.5
+tqdm==4.67.1
