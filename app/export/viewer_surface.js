@@ -1,5 +1,5 @@
 /* Small WebGL surface renderer for the existing dependency-free offline viewer.
- * Mesh extraction and exact voxel-ray picking run in the worker.
+ * Original meshes are built on the server. Picking reads the rendered GPU depth.
  */
 class OfflineSurface {
     constructor(api) {
@@ -23,10 +23,14 @@ class OfflineSurface {
         if(!gl){this.el('surfaceStatus').textContent='WebGL در این مرورگر موجود نیست؛ نمای اصلی و اندازه‌گیری‌ها قابل استفاده‌اند.';return false;}
         const shader=(type,source)=>{const s=gl.createShader(type);gl.shaderSource(s,source);gl.compileShader(s);if(!gl.getShaderParameter(s,gl.COMPILE_STATUS)){const reason=gl.getShaderInfoLog(s);gl.deleteShader(s);throw Error(reason);}return s;};
         const vs=shader(gl.VERTEX_SHADER,'attribute vec3 position; attribute vec3 normal; uniform mat3 projection; uniform mat3 rotation; uniform vec3 offset; varying float light; void main(){gl_Position=vec4(projection*(position+offset),1.0);vec3 n=normalize(rotation*normal);light=0.4+0.6*abs(dot(n,normalize(vec3(0.3,0.5,1.0))));}');
-        const fs=shader(gl.FRAGMENT_SHADER,'precision mediump float; uniform vec4 color; varying float light; void main(){gl_FragColor=vec4(color.rgb*light,color.a);}');
+        const fs=shader(gl.FRAGMENT_SHADER,'precision highp float; uniform vec4 color; uniform float pickId; varying float light; void main(){if(pickId>0.0){float q=floor(gl_FragCoord.z*16777215.0+0.5);gl_FragColor=vec4(pickId,floor(q/65536.0),mod(floor(q/256.0),256.0),mod(q,256.0))/255.0;}else{gl_FragColor=vec4(color.rgb*light,color.a);}}');
         const program=gl.createProgram();gl.attachShader(program,vs);gl.attachShader(program,fs);gl.linkProgram(program);gl.deleteShader(vs);gl.deleteShader(fs);
         if(!gl.getProgramParameter(program,gl.LINK_STATUS)){gl.deleteProgram(program);throw Error('WEBGL_LINK_FAILED');}
-        this.gl=gl;this.program=program;this.locations={position:gl.getAttribLocation(program,'position'),normal:gl.getAttribLocation(program,'normal'),projection:gl.getUniformLocation(program,'projection'),rotation:gl.getUniformLocation(program,'rotation'),color:gl.getUniformLocation(program,'color'),offset:gl.getUniformLocation(program,'offset')};
+        this.gl=gl;this.program=program;this.locations={position:gl.getAttribLocation(program,'position'),normal:gl.getAttribLocation(program,'normal'),projection:gl.getUniformLocation(program,'projection'),rotation:gl.getUniformLocation(program,'rotation'),color:gl.getUniformLocation(program,'color'),offset:gl.getUniformLocation(program,'offset'),pickId:gl.getUniformLocation(program,'pickId')};
+        this.pickBuffer=gl.createFramebuffer();this.pickTexture=gl.createTexture();this.pickDepth=gl.createRenderbuffer();
+        gl.bindTexture(gl.TEXTURE_2D,this.pickTexture);gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,1,1,0,gl.RGBA,gl.UNSIGNED_BYTE,null);gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,gl.NEAREST);gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MAG_FILTER,gl.NEAREST);gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_S,gl.CLAMP_TO_EDGE);gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_T,gl.CLAMP_TO_EDGE);
+        gl.bindRenderbuffer(gl.RENDERBUFFER,this.pickDepth);gl.renderbufferStorage(gl.RENDERBUFFER,gl.DEPTH_COMPONENT16,1,1);gl.bindFramebuffer(gl.FRAMEBUFFER,this.pickBuffer);gl.framebufferTexture2D(gl.FRAMEBUFFER,gl.COLOR_ATTACHMENT0,gl.TEXTURE_2D,this.pickTexture,0);gl.framebufferRenderbuffer(gl.FRAMEBUFFER,gl.DEPTH_ATTACHMENT,gl.RENDERBUFFER,this.pickDepth);
+        this.pickingAvailable=gl.checkFramebufferStatus(gl.FRAMEBUFFER)===gl.FRAMEBUFFER_COMPLETE;gl.bindFramebuffer(gl.FRAMEBUFFER,null);
         return true;
     }
     async add(id){return this.setSelection([...this.entries.keys(),id]);}
@@ -66,7 +70,7 @@ class OfflineSurface {
         const sequence=++this.sequence,revision=this.ui.revision,version=this.ui.version;this.notify('cancelMeshes');
         // Remove obsolete buffers immediately; stale surfaces must not imply current edits.
         for(const id of ids){const e=this.entries.get(id);if(e.buffer)this.gl.deleteBuffer(e.buffer);e.buffer=null;e.count=0;}
-        this.draw();this.el('surfaceStatus').textContent='ساخت سطح در پردازش پس‌زمینه…';this.el('surfaceProgress').value=0;
+        this.draw();this.el('surfaceStatus').textContent=this.ui.processing==='server-precomputed'&&(!this.ui.revision||this.ui.version==='original')?'بازکردن سطح‌های آمادهٔ سرور…':'به‌روزرسانی سطح نسخهٔ ویرایشی روی همین دستگاه…';this.el('surfaceProgress').value=0;
         try{
             const result=await this.rpc('meshes',{ids,version},value=>{if(sequence===this.sequence)this.el('surfaceProgress').value=value;});
             if(sequence!==this.sequence||revision!==this.ui.revision||version!==this.ui.version)return;
@@ -79,24 +83,28 @@ class OfflineSurface {
         const c=Math.cos(this.yaw),s=Math.sin(this.yaw),cp=Math.cos(this.pitch),sp=Math.sin(this.pitch);
         return {right:[c,0,-s],up:[s*sp,cp,c*sp],forward:[s*cp,-sp,c*cp]};
     }
-    draw(){
+    draw(pick=null){
         if(!this.gl||!this.el('surfacePanel').open)return;
         const gl=this.gl,mount=this.el('surfaceMount');if(!mount.clientWidth||!mount.clientHeight)return;this.canvas.style.flex='none';this.canvas.style.height=Math.max(160,mount.clientHeight-this.el('surfacePanel').querySelector('.surface-topline').offsetHeight-this.el('surfaceControls').offsetHeight-this.el('surfaceStatus').offsetHeight-this.el('surfacePanel').querySelector('.view-help').offsetHeight-52)+'px';this.fitCamera();const b=this.canvas.getBoundingClientRect();if(!b.width||!b.height)return;
         const ratio=Math.min(2,window.devicePixelRatio||1),width=Math.round(b.width*ratio),height=Math.round(b.height*ratio);if(this.canvas.width!==width||this.canvas.height!==height){this.canvas.width=width;this.canvas.height=height;}
-        gl.viewport(0,0,width,height);gl.clearColor(.06,.08,.12,1);gl.clear(gl.COLOR_BUFFER_BIT|gl.DEPTH_BUFFER_BIT);gl.enable(gl.DEPTH_TEST);gl.enable(gl.BLEND);gl.blendFunc(gl.SRC_ALPHA,gl.ONE_MINUS_SRC_ALPHA);gl.useProgram(this.program);
+        gl.bindFramebuffer(gl.FRAMEBUFFER,pick?this.pickBuffer:null);gl.viewport(pick?-pick.x:0,pick?-pick.y:0,width,height);gl.clearColor(pick?0:.06,pick?0:.08,pick?0:.12,1);gl.clear(gl.COLOR_BUFFER_BIT|gl.DEPTH_BUFFER_BIT);gl.enable(gl.DEPTH_TEST);gl.disable(gl.DITHER);if(pick)gl.disable(gl.BLEND);else gl.enable(gl.BLEND);gl.blendFunc(gl.SRC_ALPHA,gl.ONE_MINUS_SRC_ALPHA);gl.useProgram(this.program);
         const {right,up,forward}=this.axes(),scale=this.zoom/this.radius,aspect=width/height,rows=[right.map(v=>v*scale/aspect),up.map(v=>v*scale),forward.map(v=>-v/(this.radius*3))];
         const columnMajor=m=>new Float32Array([m[0][0],m[1][0],m[2][0],m[0][1],m[1][1],m[2][1],m[0][2],m[1][2],m[2][2]]);
         gl.uniform3f(this.locations.offset,...this.meshCenter.map((v,i)=>v-this.center[i]));gl.uniformMatrix3fv(this.locations.projection,false,columnMajor(rows));gl.uniformMatrix3fv(this.locations.rotation,false,columnMajor([right,up,forward]));
         const entries=[...this.entries.values()].filter(e=>e.visible&&e.opacity>0&&e.buffer);
-        for(const e of entries){gl.bindBuffer(gl.ARRAY_BUFFER,e.buffer);gl.enableVertexAttribArray(this.locations.position);gl.vertexAttribPointer(this.locations.position,3,gl.FLOAT,false,24,0);gl.enableVertexAttribArray(this.locations.normal);gl.vertexAttribPointer(this.locations.normal,3,gl.FLOAT,false,24,12);const color=this.data.colors[e.id].map(v=>Math.min(1,v/255*(e.id===this.ui.focus?1.15:1)));gl.uniform4f(this.locations.color,...color,e.opacity);gl.drawArrays(gl.TRIANGLES,0,e.count);}
+        for(const e of entries){gl.bindBuffer(gl.ARRAY_BUFFER,e.buffer);gl.enableVertexAttribArray(this.locations.position);gl.vertexAttribPointer(this.locations.position,3,gl.FLOAT,false,24,0);gl.enableVertexAttribArray(this.locations.normal);gl.vertexAttribPointer(this.locations.normal,3,gl.FLOAT,false,24,12);const color=this.data.colors[e.id].map(v=>Math.min(1,v/255*(e.id===this.ui.focus?1.15:1)));gl.uniform4f(this.locations.color,...color,e.opacity);gl.uniform1f(this.locations.pickId,pick?e.id:0);gl.drawArrays(gl.TRIANGLES,0,e.count);}
     }
     async pickAt(x,y){
-        if(!this.gl)return;const b=this.canvas.getBoundingClientRect(),nx=2*(x-b.left)/b.width-1,ny=1-2*(y-b.top)/b.height,{right,up,forward}=this.axes(),scale=this.zoom/this.radius;
-        const origin=this.center.map((v,i)=>v+right[i]*nx*(b.width/b.height)/scale+up[i]*ny/scale+forward[i]*this.radius*2),direction=forward.map(v=>-v),ids=[...this.entries.values()].filter(e=>e.visible&&e.opacity>0&&e.buffer).map(e=>e.id),sequence=this.sequence;
-        try{const result=await this.rpc('pick',{origin,direction,ids,version:this.ui.version});if(sequence!==this.sequence||!result)return;this.focus(result.label);await this.navigateWorld(result.world);this.el('surfaceStatus').textContent='انتخاب: '+this.data.labels_fa[result.label]+' · RAS mm: '+result.world.map(v=>v.toFixed(2)).join(', ');}catch(error){this.showError(error,'surfaceStatus');}
+        if(!this.gl||!this.pickingAvailable)return;const b=this.canvas.getBoundingClientRect(),px=Math.max(0,Math.min(this.canvas.width-1,Math.floor((x-b.left)/b.width*this.canvas.width))),py=Math.max(0,Math.min(this.canvas.height-1,Math.floor((b.bottom-y)/b.height*this.canvas.height))),nx=2*(px+.5)/this.canvas.width-1,ny=2*(py+.5)/this.canvas.height-1,{right,up,forward}=this.axes(),scale=this.zoom/this.radius;
+        try{
+            this.draw({x:px,y:py});const pixel=new Uint8Array(4),gl=this.gl;gl.readPixels(0,0,1,1,gl.RGBA,gl.UNSIGNED_BYTE,pixel);gl.bindFramebuffer(gl.FRAMEBUFFER,null);this.draw();
+            const label=pixel[0];if(!label||!this.entries.has(label))return;
+            const depth=(pixel[1]*65536+pixel[2]*256+pixel[3])/16777215,world=this.center.map((v,i)=>v+right[i]*nx*(b.width/b.height)/scale+up[i]*ny/scale+forward[i]*(1-2*depth)*this.radius*3);
+            this.focus(label);await this.navigateWorld(world);this.el('surfaceStatus').textContent='انتخاب: '+this.data.labels_fa[label]+' · RAS mm: '+world.map(v=>v.toFixed(2)).join(', ');
+        }catch(error){this.gl?.bindFramebuffer(this.gl.FRAMEBUFFER,null);this.draw();this.showError(error,'surfaceStatus');}
     }
     release(){
-        ++this.sequence;this.notify('cancelMeshes');if(this.gl){for(const e of this.entries.values())if(e.buffer)this.gl.deleteBuffer(e.buffer);if(this.program)this.gl.deleteProgram(this.program);this.gl.clear(this.gl.COLOR_BUFFER_BIT|this.gl.DEPTH_BUFFER_BIT);}
+        ++this.sequence;this.notify('cancelMeshes');if(this.gl){for(const e of this.entries.values())if(e.buffer)this.gl.deleteBuffer(e.buffer);if(this.program)this.gl.deleteProgram(this.program);this.gl.deleteFramebuffer(this.pickBuffer);this.gl.deleteTexture(this.pickTexture);this.gl.deleteRenderbuffer(this.pickDepth);this.gl.clear(this.gl.COLOR_BUFFER_BIT|this.gl.DEPTH_BUFFER_BIT);}
         this.entries.clear();this.gl=null;this.program=null;this.controls();this.el('surfaceProgress').value=0;this.el('surfaceStatus').textContent='پردازش لغو و حافظهٔ سطح آزاد شد. برای ساخت دوباره ناحیه را اضافه کنید.';
     }
 }

@@ -16,6 +16,7 @@ from app.inference.structures import label_colors, TOTAL_LABELS
 from app.export.persian import persian_name
 from app.export.theme import browser_theme
 from app.export.viewer_geometry import viewer_geometry, original_fingerprint
+from app.export.viewer_precompute import precompute_viewer
 
 
 def png_data(array):
@@ -74,6 +75,7 @@ def generate_preview(native_path,masks_path,directory,labels,standalone_only=Fal
         source_identity={'result_id':directory.parent.name, **context.get('source_identity',{})},
         authenticated_user=context.get('authenticated_user'),
         original_fingerprint=original_fingerprint(image,segmentation,geometry))
+    payload['precomputed']=precompute_viewer(image,segmentation,geometry,labels,hu_offset,hu_step)
     theme=browser_theme()
     assets=Path(__file__).parent
     html=(TEMPLATE.replace('__THEME_CSS__',theme)

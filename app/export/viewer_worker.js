@@ -148,17 +148,17 @@ function planeSpec(kind,world) {
     const width=Math.min(768,Math.max(1,Math.ceil((upper[u]-lower[u])/step))),height=Math.min(768,Math.max(1,Math.ceil((upper[v]-lower[v])/step)));
     return {kind,axes,width,height,lower,upper,fixed:world[f],step_u:(upper[u]-lower[u])/width,step_v:(upper[v]-lower[v])/height};
 }
-async function views({world,version,token}) {
+async function views({world,version,token,specs}) {
     requireGeometry();const mine=++viewToken,captured=revision,mask=activeMask(version),planes=[];
     for(const kind of ['axial','coronal','sagittal']) {
-        const spec=planeSpec(kind,world),pixels=new Uint16Array(spec.width*spec.height),labels=new Uint8Array(pixels.length),valid=new Uint8Array(pixels.length);
+        const spec=specs?.find(s=>s.kind===kind)||planeSpec(kind,world),pixels=new Uint16Array(spec.width*spec.height),labels=new Uint8Array(pixels.length),valid=new Uint8Array(pixels.length);
         const [u,v,f]=spec.axes;
         for(let y=0;y<spec.height;y++) {
             for(let x=0;x<spec.width;x++) {
                 const w=world.slice();w[u]=spec.upper[u]-(x+.5)*spec.step_u;w[v]=spec.upper[v]-(y+.5)*spec.step_v;w[f]=spec.fixed;
                 const p=point(inverse,w).map(Math.round),i=x+spec.width*y;
                 if(p.some((c,a)=>c<0||c>=shape[a]))continue;
-                const j=offset(...p);pixels[i]=ctValues[j];labels[i]=mask[j];valid[i]=1;
+                const j=offset(...p);pixels[i]=ctValues?.[j]||0;labels[i]=mask[j];valid[i]=1;
             }
             if(y%40===0){await yieldTask();if(mine!==viewToken||captured!==revision)throw Error('STALE');}
         }
@@ -224,10 +224,10 @@ async function dispatch(type,args,id) {
         case 'init': {
             config=args;shape=config.shape;affine=config.geometry.affine_ras_mm;
             if(config.geometry.valid)inverse=invertAffine(affine);
-            const n=shape.reduce((a,b)=>a*b,1);original=new Uint8Array(n);edited=new Uint8Array(n);ctValues=new Uint16Array(n);
+            const n=shape.reduce((a,b)=>a*b,1);original=new Uint8Array(n);edited=new Uint8Array(n);ctValues=config.include_ct===false?null:new Uint16Array(n);
             return {ready:true};
         }
-        case 'loadSlice': {const start=args.z*shape[0]*shape[1];original.set(args.labels,start);edited.set(args.labels,start);ctValues.set(args.pixels,start);return true;}
+        case 'loadSlice': {const start=args.z*shape[0]*shape[1];original.set(args.labels,start);edited.set(args.labels,start);if(ctValues)ctValues.set(args.pixels,start);return true;}
         case 'measure': return measurements(args.version,args.ids);
         case 'slice': {const start=args.z*shape[0]*shape[1];return {pixels:activeMask(args.version).slice(start,start+shape[0]*shape[1]),revision,version:args.version};}
         case 'brush': return brush(args);

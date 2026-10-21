@@ -2,9 +2,10 @@
 (() => {
 'use strict';
 const el=byId, kinds=['axial','coronal','sagittal'], titles={axial:'Axial',coronal:'Coronal',sagittal:'Sagittal'};
-const ui={ready:false,version:'edited',focus:Number(data.present[0]||Object.keys(data.labels)[0]),revision:0,
+const pre=data.precomputed?.schema_version===1?data.precomputed:null,planeCache=new Map(),dirtyLabels=new Set();
+const ui={ready:false,version:'edited',focus:Number(data.present[0]||Object.keys(data.labels)[0]),revision:0,processing:pre?'server-precomputed':'legacy-client',localProcessor:false,
     reviews:{},measurements:{original:{},edited:{}},world:null,planes:[],mpr:false,busy:false,loadCancelled:false,view:'native',inspector:'measurements'};
-let worker=null,nextId=0,pending=new Map(),loadSession=0,measurementRequest=0,nativeRequest=0,viewRequest=0,viewTimer=null;
+let worker=null,engineLoading=null,nextId=0,pending=new Map(),loadSession=0,measurementRequest=0,nativeRequest=0,viewRequest=0,viewTimer=null;
 let stroke=null,originalSlice=null,resolveReady,surface=null,selectionSignature='',selectionIdsSignature='',surfaceSelectionTimer=null;
 const ready=new Promise(resolve=>resolveReady=resolve);
 const markers=document.createElement('canvas');markers.id='markers';world.append(markers);const markerCtx=markers.getContext('2d');
@@ -15,16 +16,68 @@ const labelName=n=>data.labels_fa[n]||data.labels[n];
 const activeRow=()=>ui.measurements[ui.version][ui.focus];
 const message=(id,text)=>el(id).textContent=text;
 function showError(error,id='editStatus'){if(!['STALE','CANCELLED'].includes(error.message))message(id,'انجام نشد: '+error.message);}
-function makeWorker(){
-    const url=URL.createObjectURL(new Blob([el('viewerWorkerSource').textContent],{type:'text/javascript'}));
-    try{worker=new Worker(url);}finally{URL.revokeObjectURL(url);}
+function makeWorker(local=false){
+    if(local){worker=createViewerLocalProcessor();ui.localProcessor=true;}
+    else{const url=URL.createObjectURL(new Blob([el('viewerWorkerSource').textContent],{type:'text/javascript'}));try{worker=new Worker(url);}finally{URL.revokeObjectURL(url);}}
     worker.onmessage=event=>{const {id,result,error,progress,value}=event.data,p= pending.get(id);if(!p)return;
         if(progress){p.progress?.(value);return;}pending.delete(id);if(error)p.reject(Error(error));else p.resolve(result);};
     worker.onerror=event=>{ui.ready=false;setEnabled(false);for(const p of pending.values())p.reject(Error(event.message||'WORKER_UNAVAILABLE'));pending.clear();message('analysisStatus','پردازش پس‌زمینه در این مرورگر در دسترس نیست. نمای اصلی همچنان قابل استفاده است.');};
 }
-function rpc(type,args={},progress,transfer=[]){
+function engineRpc(type,args={},progress,transfer=[]){
     if(!worker)return Promise.reject(Error('WORKER_UNAVAILABLE'));
     return new Promise((resolve,reject)=>{const id=++nextId;pending.set(id,{resolve,reject,progress});worker.postMessage({id,type,args},transfer);});
+}
+async function ensureLocal(){
+    if(engineLoading)return engineLoading;
+    engineLoading=(async()=>{
+        makeWorker(true);message('editStatus','آماده‌سازی ویرایش آفلاین؛ محاسبات تغییرات این نسخه روی همین دستگاه انجام می‌شود…');
+        await engineRpc('init',{shape:data.shape,geometry:data.geometry,labels:data.labels,source_identity:data.source_identity,original_fingerprint:data.original_fingerprint,authenticated_user:data.authenticated_user,include_ct:false});
+        for(let z=0;z<data.shape[2];z++){
+            const mask=await imagePixels(data.overlays[z]),labels=new Uint8Array(mask.width*mask.height);
+            for(let i=0;i<labels.length;i++)labels[i]=mask.pixels[i*4];
+            await engineRpc('loadSlice',{z,labels});
+        }
+        for(const [label,state] of Object.entries(ui.reviews))await engineRpc('review',{label:Number(label),state});
+        message('editStatus','ویرایش آفلاین آماده است؛ تغییرات فقط محلی‌اند.');
+    })().catch(error=>{terminateWorker();engineLoading=null;throw error;});
+    return engineLoading;
+}
+function snapWorld(world){
+    const {planes}=pre.mpr;
+    return world.map((v,a)=>{const s=Object.values(planes).find(p=>p.axes[2]===a),i=Math.max(0,Math.min(s.frames.length-1,Math.round((s.upper[a]-v)/s.step_f-.5)));return s.upper[a]-(i+.5)*s.step_f;});
+}
+async function serverPlanes(world){
+    return Promise.all(kinds.map(async kind=>{
+        const source=pre.mpr.planes[kind],f=source.axes[2],z=Math.max(0,Math.min(source.frames.length-1,Math.round((source.upper[f]-world[f])/source.step_f-.5))),key=kind+':'+z;
+        let decoded=planeCache.get(key);
+        if(!decoded){decoded=imagePixels(source.frames[z]).then(image=>{const length=source.width*source.height,pixels=new Uint16Array(length),labels=new Uint8Array(length),valid=new Uint8Array(length);for(let i=0;i<length;i++){pixels[i]=image.pixels[i*4]+256*image.pixels[i*4+1];labels[i]=image.pixels[i*4+2];valid[i]=image.pixels[i*4+3]?1:0;}return {pixels,labels,valid};});planeCache.set(key,decoded);if(planeCache.size>6)planeCache.delete(planeCache.keys().next().value);}
+        const {frames,...spec}=source;spec.fixed=source.upper[f]-(z+.5)*source.step_f;
+        return {spec,...await decoded};
+    }));
+}
+async function rpc(type,args={},progress,transfer=[]){
+    if(!pre)return engineRpc(type,args,progress,transfer);
+    const original=args.version==='original'||ui.revision===0;
+    if(type==='measure'){
+        const rows=Object.fromEntries(args.ids.filter(n=>args.version==='original'||!dirtyLabels.has(Number(n))).map(n=>[n,pre.measurements[n]])),remaining=args.ids.filter(n=>!rows[n]);
+        if(remaining.length){await ensureLocal();Object.assign(rows,(await engineRpc(type,{...args,ids:remaining})).rows);}
+        return {rows,revision:ui.revision,version:args.version};
+    }
+    if(type==='slice'&&original){const mask=await imagePixels(data.overlays[args.z]),pixels=new Uint8Array(mask.width*mask.height);for(let i=0;i<pixels.length;i++)pixels[i]=mask.pixels[i*4];return {pixels,revision:ui.revision,version:args.version};}
+    if(type==='views'){
+        const planes=await serverPlanes(args.world);
+        if(!original){await ensureLocal();const changed=await engineRpc('views',{...args,specs:planes.map(p=>p.spec)});changed.planes.forEach((p,i)=>{planes[i]={...planes[i],labels:p.labels,valid:p.valid};});}
+        return {planes,world:args.world,token:args.token,revision:ui.revision,version:args.version};
+    }
+    if(type==='meshes'){
+        const meshes=[],remaining=[];
+        for(const id of args.ids){if(args.version!=='original'&&dirtyLabels.has(Number(id))){remaining.push(id);continue;}const asset=pre.surfaces.meshes[id];if(!asset)continue;if(asset.unavailable_reason)throw Error(asset.unavailable_reason);const image=await imagePixels(asset.png),bytes=new Uint8Array(asset.byte_length);for(let i=0;i<bytes.length;i++)bytes[i]=image.pixels[Math.floor(i/3)*4+i%3];const vertices=new Float32Array(bytes.buffer);meshes.push({id,vertices,count:asset.count});progress?.(meshes.length/args.ids.length);}
+        if(remaining.length){await ensureLocal();meshes.push(...(await engineRpc(type,{...args,ids:remaining},progress)).meshes);}
+        return {...pre.surfaces,meshes,revision:ui.revision,version:args.version};
+    }
+    if(type==='review'&&!engineLoading){if(!['approved','rejected','needs_correction'].includes(args.state)||!data.labels[args.label])throw Error('INVALID_REVIEW');return {...ui.reviews,[args.label]:args.state};}
+    if(type==='export'&&!engineLoading)return {schema_version:'1.0',package_type:'ct_viewer_edits',source_identity:data.source_identity,original_fingerprint:data.original_fingerprint,shape:data.shape,geometry:data.geometry,labels:data.labels,encoding:'sparse_voxel_changes',encoding_description:'[flat_index, original_label, edited_label]; zero-based x + nx*(y + ny*z); background=0; display voxel grid; geometry.voxel_transform maps to original acquisition indices',changes:[],created_at:new Date().toISOString(),authenticated_user:data.authenticated_user||null,user_identity_context:data.authenticated_user?'authenticated result creator captured at generation; offline reviewer identity is unavailable':null,review_states:{...ui.reviews},relationship:'separate edited version of immutable original model result',saved_to_server:false};
+    await ensureLocal();return engineRpc(type,args,progress,transfer);
 }
 function notify(type){worker?.postMessage({type});}
 function terminateWorker(){worker?.terminate();worker=null;for(const p of pending.values())p.reject(Error('CANCELLED'));pending.clear();}
@@ -98,6 +151,11 @@ function focus(n){
 async function load(){
     const session=++loadSession;ui.loadCancelled=false;ui.ready=false;el('analysisLoading').classList.remove('complete');setEnabled(false);el('cancelAnalysis').disabled=false;el('retryAnalysis').hidden=true;
     try{
+        if(pre){
+            ui.world=snapWorld(point(affine,[(data.shape[0]-1)/2,(data.shape[1]-1)/2,index]));
+            await measure();ui.ready=true;setEnabled(true);selectionChanged(true);
+            message('analysisStatus','اندازه‌گیری، سه‌نما و سطح‌ها روی سرور آماده شده‌اند؛ فقط نمایش روی این دستگاه است.');el('analysisProgress').value=1;el('cancelAnalysis').disabled=true;el('analysisLoading').classList.add('complete');resolveReady(true);await render(index);return;
+        }
         terminateWorker();makeWorker();await rpc('init',{shape:data.shape,geometry:data.geometry,labels:data.labels,source_identity:data.source_identity,original_fingerprint:data.original_fingerprint,authenticated_user:data.authenticated_user});
         for(let z=0;z<data.shape[2];z++){
             if(session!==loadSession||ui.loadCancelled)throw Error('CANCELLED');
@@ -113,7 +171,7 @@ async function load(){
     }catch(error){if(session!==loadSession)return;ui.ready=false;setEnabled(false);el('retryAnalysis').hidden=false;el('cancelAnalysis').disabled=true;showError(error,'analysisStatus');}
 }
 async function slice(z,pixels){
-    originalSlice=new Uint8ClampedArray(pixels);if(!ui.ready)return pixels;
+    originalSlice=new Uint8ClampedArray(pixels);if(!ui.ready||pre&&(ui.version==='original'||ui.revision===0))return pixels;
     const version=ui.version,request=++nativeRequest,session=loadSession;
     try{const result=await rpc('slice',{z,version});if(request!==nativeRequest||version!==ui.version||session!==loadSession)throw Error('STALE');
         const rgba=new Uint8ClampedArray(pixels);for(let i=0;i<result.pixels.length;i++)rgba[i*4]=result.pixels[i];return rgba;
@@ -148,7 +206,7 @@ async function navigateSection(s){showView('native');const r=activeRow();if(!r)r
 async function changed(result){
     if(!result.affected?.length){updateVersion();return;}
     ui.revision=result.revision;ui.reviews=result.reviews||ui.reviews;ui.undo=result.undo;ui.redo=result.redo;
-    for(const n of result.affected)delete ui.measurements.edited[n];
+    for(const n of result.affected){dirtyLabels.add(Number(n));delete ui.measurements.edited[n];}
     surface?.invalidate(result.affected);updateVersion();message('editStatus','نسخهٔ ویرایشی تغییر کرد؛ بازبینی دوباره لازم است. فقط محلی؛ روی سرور ذخیره نشده است.');
     await measure(result.affected);focus(ui.focus);await render(index);surface?.refresh(result.affected);
 }
@@ -157,8 +215,9 @@ async function mutate(type,args={}){
     try{const result=await rpc(type,args);await changed(result);}catch(error){showError(error);}finally{ui.busy=false;updateVersion();}
 }
 function requestViews(){
-    if(!ui.mpr||!ui.ready)return;clearTimeout(viewTimer);notify('cancelViews');const token=++viewRequest;
-    viewTimer=setTimeout(async()=>{const version=ui.version,captured=ui.revision;message('mprStatus','بازسازی نماهای همگام…');try{const result=await rpc('views',{world:ui.world.slice(),version,token});if(token!==viewRequest||!ui.mpr||captured!==ui.revision||version!==ui.version)return;ui.planes=result.planes;drawPlanes();message('mprStatus','سه نما همگام‌اند · برای جابه‌جایی نشانگر روی تصویر کلیک کنید.');}catch(error){showError(error,'mprStatus');}},30);
+    if(!ui.mpr||ui.view!=='mpr'||!ui.ready)return;clearTimeout(viewTimer);notify('cancelViews');const token=++viewRequest;
+    if(pre){ui.world=snapWorld(ui.world);positionText();}
+    viewTimer=setTimeout(async()=>{const version=ui.version,captured=ui.revision;message('mprStatus',pre?'بازکردن نماهای آمادهٔ سرور…':'بازسازی نماهای همگام…');try{const result=await rpc('views',{world:ui.world.slice(),version,token});if(token!==viewRequest||!ui.mpr||captured!==ui.revision||version!==ui.version)return;ui.planes=result.planes;drawPlanes();message('mprStatus','سه نما همگام‌اند · برای جابه‌جایی نشانگر روی تصویر کلیک کنید.');}catch(error){showError(error,'mprStatus');}},30);
 }
 function drawPlanes(){
     const mount=el('mprMount');if(!mount.clientWidth||!mount.clientHeight)return;const grid=el('mprPanel').querySelector('.mpr-grid');grid.style.flex='none';grid.style.height=Math.max(180,mount.clientHeight-el('mprPanel').querySelector('.tools').offsetHeight-el('mprPanel').querySelector('.mpr-status').offsetHeight-52)+'px';
@@ -172,7 +231,7 @@ function drawPlanes(){
         const [u,v,f]=spec.axes,r=activeRow();
         if(el('showMarkers').checked&&selected.has(ui.focus)&&r?.count&&spec.fixed>=r.lower[f]&&spec.fixed<=r.upper[f]){context.strokeStyle='#ffe16b';context.setLineDash([4,3]);context.strokeRect((spec.upper[u]-r.upper[u])/spec.step_u,(spec.upper[v]-r.upper[v])/spec.step_v,r.dimensions_mm[u]/spec.step_u,r.dimensions_mm[v]/spec.step_v);context.setLineDash([]);}
         if(ui.world){const x=(spec.upper[u]-ui.world[u])/spec.step_u,y=(spec.upper[v]-ui.world[v])/spec.step_v;context.strokeStyle='#ff8c28';context.beginPath();context.moveTo(x,0);context.lineTo(x,c.height);context.moveTo(0,y);context.lineTo(c.width,y);context.stroke();}
-        const slider=el('mpr'+titles[spec.kind]+'Slice');slider.min=spec.lower[f];slider.max=spec.upper[f];slider.step=Math.min(spec.step_u,spec.step_v)/4;slider.value=spec.fixed;
+        const slider=el('mpr'+titles[spec.kind]+'Slice');slider.min=spec.lower[f]+(spec.step_f||0)/2;slider.max=spec.upper[f]-(spec.step_f||0)/2;slider.step=spec.step_f||Math.min(spec.step_u,spec.step_v)/4;slider.value=spec.fixed;
     }
 }
 function clearMpr(){ui.mpr=false;viewRequest++;clearTimeout(viewTimer);notify('cancelViews');ui.planes=[];for(const kind of kinds){const c=el('mpr'+titles[kind]);c.width=c.height=1;c.style.height='auto';}drawMarkers();message('mprStatus','نماهای بازسازی‌شده آزاد شدند.');}
