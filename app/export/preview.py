@@ -12,9 +12,10 @@ import numpy as np
 from PIL import Image
 
 from tools.common import atomic_write
-from app.inference.structures import label_colors
+from app.inference.structures import label_colors, TOTAL_LABELS
 from app.export.persian import persian_name
 from app.export.theme import browser_theme
+from app.export.viewer_geometry import viewer_geometry, original_fingerprint
 
 
 def png_data(array):
@@ -23,7 +24,7 @@ def png_data(array):
     return base64.b64encode(stream.getvalue()).decode('ascii')
 
 
-def generate_preview(native_path,masks_path,directory,labels,standalone_only=False):
+def generate_preview(native_path,masks_path,directory,labels,standalone_only=False,viewer_context=None):
     directory=Path(directory)
     ct=nib.load(native_path);mask=nib.load(masks_path)
     if ct.shape!=mask.shape or not np.allclose(ct.affine,mask.affine):
@@ -34,6 +35,8 @@ def generate_preview(native_path,masks_path,directory,labels,standalone_only=Fal
     image=nib.orientations.apply_orientation(np.asanyarray(ct.dataobj),transform)
     segmentation=nib.orientations.apply_orientation(np.asanyarray(mask.dataobj).astype(np.uint8),transform)
     affine=ct.affine@nib.orientations.inv_ornt_aff(transform,ct.shape)
+    geometry=viewer_geometry(ct,affine,transform,viewer_context)
+    context=viewer_context or {}
     windowed=np.round(np.clip((image+160)/400,0,1)*255).astype(np.uint8)
     # Lossless integer HU, or a documented bounded quantization for fractional HU.
     # RGB PNG uses R/G for low/high bytes and opaque alpha on browser decode.
@@ -67,8 +70,19 @@ def generate_preview(native_path,masks_path,directory,labels,standalone_only=Fal
              'has_dicom':(directory/'segmentation.dcm').is_file(),
              'positions':[round(float((affine@np.array([0,0,z,1]))[2]),1) for z in range(image.shape[2])],
              'shape':list(image.shape)}
+    payload.update(geometry=geometry,available_class_count=len(TOTAL_LABELS),
+        source_identity={'result_id':directory.parent.name, **context.get('source_identity',{})},
+        authenticated_user=context.get('authenticated_user'),
+        original_fingerprint=original_fingerprint(image,segmentation,geometry))
     theme=browser_theme()
-    html=TEMPLATE.replace('__THEME_CSS__',theme).replace('__DATA__',json.dumps(payload,separators=(',',':')))
+    assets=Path(__file__).parent
+    html=(TEMPLATE.replace('__THEME_CSS__',theme)
+          .replace('__EXTENSION_CSS__',(assets/'viewer_extension.css').read_text())
+          .replace('__EXTENSION_HTML__',(assets/'viewer_extension.html').read_text())
+          .replace('__WORKER_JS__',(assets/'viewer_worker.js').read_text())
+          .replace('__EXTENSION_JS__',(assets/'viewer_extension.js').read_text())
+          .replace('__SURFACE_JS__',(assets/'viewer_surface.js').read_text())
+          .replace('__DATA__',json.dumps(payload,separators=(',',':')).replace('<','\\u003c')))
     if standalone_only:
         html=re.sub(r'<h2>دریافت نتیجه</h2><div class="downloads">.*?</div>','<p class="small">فقط همین نمایشگر تحویل داده می‌شود؛ فایل‌های پردازش روی سرور نگه‌داری نمی‌شوند.</p>',html)
     atomic_write(directory/'viewer.html',html)

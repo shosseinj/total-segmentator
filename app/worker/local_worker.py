@@ -90,13 +90,19 @@ def process(jobs,state):
         labelmap=np.asanyarray(native.dataobj).astype(np.uint8)
         labels={number:name for number,name in TOTAL_LABELS.items() if name in state['structures']}
         results=directory/'results';results.mkdir(exist_ok=True,mode=0o700)
+        # Add existing validated source geometry/identity to the viewer only.
+        viewer_context={'validated_affine_ras_mm':volume.affine_ras.tolist(),
+            'source_identity':{'study_instance_uid':str(volume.datasets[0].StudyInstanceUID),
+                'series_instance_uid':str(volume.datasets[0].SeriesInstanceUID),
+                'frame_of_reference_uid':str(volume.datasets[0].FrameOfReferenceUID)},
+            'authenticated_user':{'actor_id':state['actor_id']} if state.get('actor_id') else None}
         if state.get('html_only'):
             # Only the HTML needs a temporary mask. No ZIP, DICOM SEG, PNG,
             # standalone CSS, measurements file or reusable result is produced.
             nib.save(nib.Nifti1Image(labelmap,volume.affine_ras),results/'masks.nii.gz')
             mark('creating_preview','exporting')
             artifacts=generate_preview(directory/'model/native.nii.gz',results/'masks.nii.gz',results,
-                                       {str(i):label for i,label in labels.items()},standalone_only=True)
+                                       {str(i):label for i,label in labels.items()},standalone_only=True,viewer_context=viewer_context)
             timings[current_stage]=round(time.monotonic()-phase_started,3)
             shutil.rmtree(extracted)
             jobs.save(state,status='succeeded',stage='succeeded',artifacts=artifacts,timings=dict(timings))
@@ -122,7 +128,7 @@ def process(jobs,state):
                 'benchmark':{**benchmark,'wall_seconds':time.monotonic()-started}}
         mark('creating_preview','exporting')
         try:
-            artifacts.update(generate_preview(directory/'model/native.nii.gz',results/'masks.nii.gz',results,result['labels']))
+            artifacts.update(generate_preview(directory/'model/native.nii.gz',results/'masks.nii.gz',results,result['labels'],viewer_context=viewer_context))
         except Exception:
             notes.append('LOCAL_PREVIEW_UNAVAILABLE')
         result['benchmark']['wall_seconds']=time.monotonic()-started
