@@ -38,10 +38,20 @@ def write_export(root, image, masks, affine, labels, *, coded=True, context=None
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--output',type=Path,default=Path('work/viewer-verification'))
+    parser.add_argument('--swagger-sample',action='store_true',help='Write a compact standalone viewer.html for the Swagger sample.')
     args=parser.parse_args()
     image,masks=phantom()
     a=np.diag([1.4,1.4,2.5,1.]);a[:3,3]=[-179,-179,-60]
     labels={str(n):name for n,name in TOTAL_LABELS.items()}
+    if args.swagger_sample:
+        # Keep the public documentation asset small while retaining the same
+        # field of view and the production viewer's interactive controls.
+        a[:3,:3]=a[:3,:3]@np.diag([4,4,2])
+        viewer=write_export(args.output,image[::4,::4,::2],masks[::4,::4,::2],a,labels)
+        viewer.chmod(0o644)
+        for name in ('ct.nii.gz','masks.nii.gz'):(args.output/name).unlink()
+        print(json.dumps({'sample':str(viewer.resolve()),'bytes':viewer.stat().st_size}))
+        return
     demo=write_export(args.output/'demo',image,masks,a,labels)
     shape=(18,16,12);m=np.zeros(shape,np.uint8);m[3:6,4:8,2:7]=1;m[11:14,4:8,2:7]=2;m[0,0,0]=3
     image=np.arange(np.prod(shape),dtype=np.int16).reshape(shape)-1000

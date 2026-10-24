@@ -26,6 +26,7 @@ ERROR_STATUS={'ACCESS_DENIED':403,'SOURCE_DENIED':403,'SCOPE_DENIED':403,'IDEMPO
 ERROR_STATUS.update(ARCHIVE_LIMIT=413,CORRUPT_ZIP=422,EMPTY_ZIP=422,ENCRYPTED_ZIP=422,UPLOAD_VERIFY_FAILED=503)
 ERROR_STATUS.update(UPLOAD_NOT_FOUND=404,ARTIFACT_NOT_FOUND=404)
 ERROR_STATUS.update(VIEW_LINK_INVALID=403)
+SAVED_VIEWER_PATH=Path(__file__).resolve().parents[1]/'exports'/'dicom-viewer.html'
 
 def create_app(settings,repository=None,store=None):
     @asynccontextmanager
@@ -36,7 +37,7 @@ def create_app(settings,repository=None,store=None):
             if local_jobs:await run_in_threadpool(local_jobs.reap_ephemeral,True)
 
     app=FastAPI(title='ناحیه‌بندی سی‌تی با کارت گرافیک',docs_url=None,redoc_url=None,lifespan=lifespan,
-                description='برای دریافت viewer.html از POST /v1/upload/ استفاده کنید. فقط HTML نهایی تحویل داده می‌شود و فایل‌های موقت پاک می‌شوند. نتایج روی سرور ذخیره نمی‌شوند. در حالت آزمایشی، توکن Swagger خودکار وارد می‌شود؛ در حالت عادی SEG_SERVICE_TOKEN را در Authorize وارد کنید. اطلاعات مرکز و اجرا و کلید درخواست خودکار تعیین می‌شوند. پیش‌فرض پردازش همهٔ ۱۱۷ ناحیه است.')
+                description='برای دریافت viewer.html از POST /v1/upload/ استفاده کنید. فقط HTML نهایی تحویل داده می‌شود و فایل‌های موقت پاک می‌شوند. آپلودها سابقهٔ خودکار ندارند؛ نسخهٔ ذخیره‌شدهٔ dicom.zip از بخش Saved results قابل دریافت است. در حالت آزمایشی، توکن Swagger خودکار وارد می‌شود؛ در حالت عادی SEG_SERVICE_TOKEN را در Authorize وارد کنید. اطلاعات مرکز و اجرا و کلید درخواست خودکار تعیین می‌شوند. پیش‌فرض پردازش همهٔ ۱۱۷ ناحیه است.')
     app.state.settings=settings
     repo=repository or (Repository(settings.database_url) if settings else None)
     store=store or (MinioStore(settings) if settings else None)
@@ -62,6 +63,23 @@ def create_app(settings,repository=None,store=None):
 
     @app.get('/results',include_in_schema=False)
     def no_saved_results():return RedirectResponse('/docs')
+
+    @app.get('/docs/samples/viewer.html',include_in_schema=False)
+    def sample_viewer(download:bool=False):
+        return FileResponse(Path(__file__).with_name('web')/'samples'/'viewer.html',media_type='text/html',
+                            filename='viewer.html' if download else None,
+                            headers={'X-Content-Type-Options':'nosniff'})
+
+    @app.get('/v1/exports/dicom-viewer.html',tags=['Saved results'],operation_id='download_saved_dicom_viewer',
+             summary='Download the saved dicom.zip viewer',response_class=FileResponse,
+             description='نسخهٔ کامل ذخیره‌شده از پردازش dicom.zip را دریافت کنید. Try it out و سپس Execute را بزنید و از Download file استفاده کنید. فایل HTML را پس از دریافت در مرورگر باز کنید. این مسیر نیازمند توکن سرویس است و پردازش جدیدی اجرا نمی‌کند.',
+             responses={200:{'description':'Complete saved HTML viewer, delivered as a file download.',
+                             'content':{'application/octet-stream':{'schema':{'type':'string','format':'binary'}}}},
+                        404:{'description':'The saved viewer is not present on this server.'}})
+    def download_saved_viewer(actor=Depends(authenticate_local)):
+        if not SAVED_VIEWER_PATH.is_file():raise HTTPException(404,'SAVED_VIEWER_NOT_FOUND')
+        return FileResponse(SAVED_VIEWER_PATH,media_type='application/octet-stream',filename='dicom-viewer.html',
+                            headers={'Cache-Control':'no-store','Referrer-Policy':'no-referrer','X-Content-Type-Options':'nosniff'})
 
     @app.exception_handler(ValueError)
     async def safe_error(request,exc):
@@ -131,8 +149,20 @@ def create_app(settings,repository=None,store=None):
 
     @app.post('/v1/uploads',status_code=200,include_in_schema=False,response_class=FileResponse)
     @app.post('/v1/upload/',status_code=200,tags=['آپلود ZIP و نتایج'],summary='آپلود ZIP و دریافت HTML نهایی بدون نگه‌داری نتیجه',response_class=FileResponse,
-              description='فقط فایل HTML مستقل برمی‌گردد. ZIP ورودی و همهٔ فایل‌های موقت پس از آماده‌شدن پاسخ پاک می‌شوند؛ سابقه، کش ماسک و ZIP نتیجه نگه‌داری نمی‌شود. Swagger مرحلهٔ جاری را نشان می‌دهد و viewer.html را خودکار دریافت می‌کند. پیش‌فرض سری -1 یعنی انتخاب خودکار CT معتبر با بیشترین برش.',
-              responses={200:{'content':{'text/html':{'schema':{'type':'string','format':'binary'}}}},422:{'description':'خطای فایل یا پردازش؛ فایل‌های موقت پاک می‌شوند.'},504:{'description':'پایان مهلت؛ پردازش لغو و فایل‌های موقت پاک می‌شوند.'}})
+              description='فقط فایل HTML مستقل برمی‌گردد. ZIP ورودی و همهٔ فایل‌های موقت پس از آماده‌شدن پاسخ پاک می‌شوند؛ سابقه، کش ماسک و ZIP نتیجه نگه‌داری نمی‌شود. Swagger مرحلهٔ جاری را نشان می‌دهد و viewer.html را خودکار دریافت می‌کند. پیش‌فرض سری -1 یعنی انتخاب خودکار CT معتبر با بیشترین برش.\n\n'
+                          '**نمونهٔ خروجی:** [نمایش viewer.html](/docs/samples/viewer.html) · [دریافت فایل نمونه](/docs/samples/viewer.html?download=true). این نمونه با داده‌ها و ماسک‌های مصنوعی ساخته شده و شامل اطلاعات بیمار یا پیش‌بینی مدل نیست.',
+              openapi_extra={'externalDocs':{'description':'نمایش نمونهٔ کامل viewer.html با داده‌های مصنوعی','url':'/docs/samples/viewer.html'}},
+              responses={200:{'description':'فایل کامل و مستقل viewer.html؛ نمونهٔ تعاملی در توضیحات بالا قابل نمایش و دریافت است.',
+                              'headers':{'Content-Disposition':{'schema':{'type':'string'},'example':'attachment; filename="viewer.html"'},
+                                         'X-Job-Id':{'schema':{'type':'string'},'example':'0123456789abcdef0123456789abcdef'},
+                                         'X-Selected-Series-Index':{'schema':{'type':'integer'},'example':0},
+                                         'X-Selected-Series-Slices':{'schema':{'type':'integer'},'example':24}},
+                              'content':{'text/html':{'schema':{'type':'string','format':'binary'},
+                                                      # externalValue makes Swagger fetch and render the entire
+                                                      # embedded CT viewer when this operation is expanded.
+                                                      'examples':{'viewer':{'summary':'نمونهٔ کوتاه HTML؛ فایل کامل از لینک بالا قابل دریافت است.',
+                                                                            'value':'<!doctype html>\n<html lang="fa" dir="rtl">\n<head><meta charset="utf-8"><title>فضای بررسی سی‌تی | شریف</title></head>\n<body>\n<main class="viewer-app">\n<!-- Shortened example: the complete viewer includes CT images, segmentation masks and interactive controls. -->\n</main>\n</body>\n</html>'}}}}},
+                         422:{'description':'خطای فایل یا پردازش؛ فایل‌های موقت پاک می‌شوند.'},504:{'description':'پایان مهلت؛ پردازش لغو و فایل‌های موقت پاک می‌شوند.'}})
     async def upload_zip(request:Request,file:UploadFile=File(...,description='فایل ZIP حاوی فایل‌های دایکام؛ پوشه‌های داخلی مجازند.',json_schema_extra={'format':'binary'}),
                    structures:str=Form('all',description='همهٔ ۱۱۷ ناحیه با all؛ یا نام‌های لاتین ناحیه‌ها با ویرگول.'),
                    quality:Literal['standard','fast']=Form('standard'),

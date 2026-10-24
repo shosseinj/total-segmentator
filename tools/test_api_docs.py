@@ -10,6 +10,35 @@ from app.main import create_app
 
 
 class ApiDocsTests(unittest.TestCase):
+    def test_upload_response_links_to_a_standalone_sample(self):
+        with TestClient(create_app(None)) as client:
+            docs=client.get('/docs')
+            self.assertIn('href="/docs/samples/viewer.html"',docs.text)
+            self.assertIn('href="/docs/samples/viewer.html?download=true"',docs.text)
+            schema=client.get('/openapi.json').json()
+            operation=schema['paths']['/v1/upload/']['post']
+            self.assertIn('[نمایش viewer.html](/docs/samples/viewer.html)',operation['description'])
+            response=operation['responses']['200']
+            example=response['content']['text/html']['examples']['viewer']
+            # External examples are eagerly fetched by Swagger; the complete
+            # embedded viewer must only load after following its link.
+            self.assertNotIn('externalValue',example)
+            self.assertTrue(example['value'].startswith('<!doctype html>'))
+            self.assertLess(len(example['value']),1000)
+            sample_url=operation['externalDocs']['url']
+            self.assertNotIn(sample_url,schema['paths'])
+            sample=client.get(sample_url)
+            self.assertEqual(sample.status_code,200)
+            self.assertTrue(sample.headers['content-type'].startswith('text/html'))
+            self.assertNotIn('content-disposition',sample.headers)
+            self.assertIn('SYNTHETIC DEMO',sample.text)
+            self.assertIn('const data=',sample.text)
+            self.assertIn('themePicker',sample.text)
+            self.assertNotIn('__DATA__',sample.text)
+            download=client.get(sample_url+'?download=true')
+            self.assertEqual(download.headers['content-disposition'],response['headers']['Content-Disposition']['example'])
+            self.assertEqual(download.content,sample.content)
+
     def test_docs_redirect_and_security_schema(self):
         with TestClient(create_app(None)) as client:
             response=client.get('/',follow_redirects=False)

@@ -1,10 +1,19 @@
 <nav dir="rtl" style="padding:16px 24px;background:#142031;color:white;font:15px Tahoma;line-height:2">
-<strong style="color:#8ee3c1">فقط دریافت HTML؛ نتیجه‌ای روی سرور نگه‌داری نمی‌شود</strong>
+<strong style="color:#8ee3c1">دریافت HTML؛ فایل‌های موقت آپلود پاک می‌شوند</strong>
 <span style="margin:0 20px">POST /v1/upload/ ← نمایش مرحله‌های پردازش ← دریافت خودکار viewer.html نهایی</span>
+<div>نمونهٔ خروجی: <a href="/docs/samples/viewer.html" target="_blank" rel="noopener noreferrer" style="color:#8ee3c1">نمایش viewer.html</a> · <a href="/docs/samples/viewer.html?download=true" style="color:#8ee3c1">دریافت فایل نمونه</a> <small>— داده‌ها و ماسک‌های مصنوعی؛ بدون اطلاعات بیمار یا پیش‌بینی مدل</small></div>
+<div>نتیجهٔ dicom.zip: <a id="savedViewerLink" href="#/Saved%20results/download_saved_dicom_viewer" style="color:#8ee3c1">دریافت dicom-viewer.html</a> <small>— در بخش Saved results، گزینه‌های Try it out ← Execute ← Download file را بزنید.</small></div>
 <div id="uploadTransfers" aria-live="polite"></div>
 </nav>
 <script>
 (()=>{'use strict';const originalFetch=window.fetch;const stages=__STAGES__;const defaultToken=__DEFAULT_TOKEN__;const number=new Intl.NumberFormat('fa-IR');
+document.getElementById('savedViewerLink').addEventListener('click',event=>{
+ const operation=document.getElementById('operations-Saved_results-download_saved_dicom_viewer');
+ if(!operation)return;
+ event.preventDefault();
+ if(!operation.classList.contains('is-open'))operation.querySelector('.opblock-summary-control').click();
+ operation.scrollIntoView({behavior:'smooth',block:'start'});
+});
 window.segSwaggerAuthorize=ui=>{if(defaultToken)ui.preauthorizeApiKey('ServiceToken',defaultToken);};
 window.fetch=async function(input,init){
  const address=new URL(typeof input==='string'||input instanceof URL?String(input):input.url,location.href);

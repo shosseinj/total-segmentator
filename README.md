@@ -194,6 +194,8 @@ Treat the file as literal configuration data: **do not `source` it**. The native
 
 ## Upload from Swagger
 
+Swagger includes links to view or download a sample above the form and in the `/v1/upload/` response documentation. The sample is a complete interactive HTML viewer built with synthetic voxels and illustrative masks; it contains no patient data or model predictions. You can open it without uploading a ZIP or running inference.
+
 1. Open `/docs` and expand **POST `/v1/upload/`**.
 2. If automatic authorization is disabled, click **Authorize** and paste `SEG_SERVICE_TOKEN` from your private configuration, without the `Bearer` prefix.
 3. Click **Try it out**, select a ZIP, keep `structures=all` and `series_index=-1`, then click **Execute**.
@@ -202,6 +204,10 @@ Treat the file as literal configuration data: **do not `source` it**. The native
 For temporary testing, `SEG_SWAGGER_AUTO_AUTHORIZE=true` makes Swagger fill the token automatically. This exposes the token to anyone who can open that docs page. Keep it `false` for normal integration and restart the API after changing it. API clients always need a Bearer token regardless of this UI setting.
 
 The actual HTTP response is **HTML**. Swagger displays a small JSON download receipt to avoid rendering a large embedded CT file in its response panel; that receipt is not the API's wire response.
+
+After changing the viewer, regenerate the bundled sample with `"$SEG_PYTHON" -m tools.generate_viewer_demo --swagger-sample --output app/web/samples`.
+
+To download the manually saved `exports/dicom-viewer.html` from Swagger, expand **GET `/v1/exports/dicom-viewer.html`** under **Saved results**, then click **Try it out → Execute → Download file**. This endpoint requires the service token and serves the saved file without rerunning inference. Swagger receives a binary download so the complete HTML is not rendered in its response panel. The endpoint returns `404` if that saved file is absent; uploads still do not create a result history automatically.
 
 ## Call the API from your application
 
@@ -305,6 +311,7 @@ For that deployment, configure `CLINIC_SSH_TARGET` and `CLINIC_ROOT` in `.env` o
   tools.test_measurements tools.test_native
 
 # Optional browser integration checks; Firefox is required.
+"$SEG_PYTHON" -m tools.check_swagger_browser
 "$SEG_PYTHON" -m tools.check_upload_browser
 "$SEG_PYTHON" -m tools.check_upload_browser --auto-authorize
 

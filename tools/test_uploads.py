@@ -151,6 +151,24 @@ class UploadTests(unittest.TestCase):
         self.assertNotEqual(first.headers['X-Job-Id'],second.headers['X-Job-Id'])
         self.assert_clean()
 
+    def test_saved_viewer_download_is_authenticated_and_returns_original_bytes(self):
+        path=Path(self.directory.name)/'dicom-viewer.html'
+        content=b'<!doctype html><html><body>Saved viewer</body></html>'
+        path.write_bytes(content)
+        with patch('app.main.SAVED_VIEWER_PATH',path):
+            url='/v1/exports/dicom-viewer.html'
+            self.assertEqual(self.client.get(url).status_code,401)
+            self.assertEqual(self.client.get(url,headers={'Authorization':'Bearer wrong-token'}).status_code,401)
+            self.assertEqual(self.client.get(url,headers={**self.headers,'X-Tenant-Id':'other'}).status_code,403)
+            response=self.client.get(url,headers={'Authorization':self.headers['Authorization']})
+            self.assertEqual(response.status_code,200)
+            self.assertEqual(response.content,content)
+            self.assertEqual(response.headers['content-type'],'application/octet-stream')
+            self.assertEqual(response.headers['content-disposition'],'attachment; filename="dicom-viewer.html"')
+            self.assertEqual(response.headers['cache-control'],'no-store')
+            path.unlink()
+            self.assertEqual(self.client.get(url,headers=self.headers).status_code,404)
+
     def test_authentication_and_explicit_scope_restrictions(self):
         for changed,status in [({},401),({'Authorization':'Bearer wrong-token'},401),
                 ({**self.headers,'X-Tenant-Id':'other'},403),({**self.headers,'X-Actor-Id':'bad actor'},403),

@@ -16,6 +16,7 @@ id_ed25519*
 # Installed weights, uploaded medical data and generated results
 /models/
 /work/
+/exports/
 /.runtime/
 /bundle-manifest.json
 /VERIFICATION.md
