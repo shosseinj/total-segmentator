@@ -95,7 +95,7 @@ class UploadTests(unittest.TestCase):
         def preview(*args,**kwargs):
             result=generate_preview(*args,**kwargs)
             directory=Path(args[2]);id=directory.parent.name
-            self.produced[id]={'html':(directory/'viewer.html').read_bytes(),
+            self.produced[id]={'zip':(directory/result['viewer']).read_bytes(),
                 'files':sorted(p.name for p in directory.iterdir())}
             return result
         def run():
@@ -116,29 +116,31 @@ class UploadTests(unittest.TestCase):
                 self.assertEqual(errors,[])
                 archive.assert_not_called();dicom.assert_not_called()
 
-    def test_final_html_is_identical_to_generated_file_and_nothing_is_retained(self):
+    def test_final_zip_is_identical_to_generated_file_and_nothing_is_retained(self):
         with self.local_worker():response=self.upload()
-        self.assertEqual(response.status_code,200,response.text)
-        self.assertTrue(response.headers['content-type'].startswith('text/html'))
-        self.assertIn('attachment; filename="viewer.html"',response.headers['content-disposition'])
+        self.assertEqual(response.status_code,200)
+        self.assertEqual(response.headers['content-type'],'application/zip')
         id=response.headers['x-job-id']
-        self.assertEqual(response.content,self.produced[id]['html'])
-        self.assertEqual(self.produced[id]['files'],['masks.nii.gz','viewer.html'])
-        data=json.loads(response.text.split('const data=',1)[1].split(';const byId',1)[0])
-        self.assertEqual(len(data['labels']),117)
-        self.assertEqual(data['present'],[5])
-        self.assertIn('themePicker',response.text)
-        self.assertIn('--color-primary: #0065f8',response.text)
-        self.assertNotIn('href="results.zip"',response.text)
-        self.assertNotIn('href="masks.nii.gz"',response.text)
-        self.assertNotIn('example-test-token',response.text)
-        self.assertNotIn('location.replace(',response.text)
+        self.assertEqual(response.headers['content-disposition'],f'attachment; filename="ct-viewer-{id}.zip"')
+        self.assertEqual(response.content,self.produced[id]['zip'])
+        self.assertEqual(self.produced[id]['files'],[f'ct-viewer-{id}.zip','masks.nii.gz'])
+        with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
+            self.assertIsNone(archive.testzip())
+            data=json.loads(archive.read('viewer/data/manifest.json'))
+            html=archive.read('viewer/index.html').decode()
+            self.assertEqual(len(data['labels']),117)
+            self.assertEqual(data['present'],[5])
+            self.assertIn('themePicker',html)
+            self.assertNotIn('data:image',html)
+            self.assertNotIn('viewer/viewer.html',archive.namelist())
+            self.assertIn('--color-primary: #0065f8',archive.read('viewer/assets/viewer.css').decode())
+            self.assertNotIn('example-test-token',str(data))
         self.assert_clean()
         self.assertEqual(self.client.get('/v1/uploads',headers=self.headers).json(),{'items':[],'retention':False})
         self.assertEqual(self.client.get('/v1/uploads/'+id,headers=self.headers).status_code,404)
         self.assertEqual(self.client.get('/v1/uploads/'+id+'/result',headers=self.headers).status_code,404)
 
-    def test_token_only_and_plural_alias_return_html_without_a_cache(self):
+    def test_token_only_and_plural_alias_return_zip_without_a_cache(self):
         headers={'Authorization':self.headers['Authorization']}
         with self.local_worker():
             first=self.upload(headers=headers)
@@ -152,19 +154,19 @@ class UploadTests(unittest.TestCase):
         self.assert_clean()
 
     def test_saved_viewer_download_is_authenticated_and_returns_original_bytes(self):
-        path=Path(self.directory.name)/'dicom-viewer.html'
-        content=b'<!doctype html><html><body>Saved viewer</body></html>'
+        path=Path(self.directory.name)/'dicom-viewer.zip'
+        content=b'PK\x03\x04saved-viewer-test'
         path.write_bytes(content)
         with patch('app.main.SAVED_VIEWER_PATH',path):
-            url='/v1/exports/dicom-viewer.html'
+            url='/v1/exports/dicom-viewer.zip'
             self.assertEqual(self.client.get(url).status_code,401)
             self.assertEqual(self.client.get(url,headers={'Authorization':'Bearer wrong-token'}).status_code,401)
             self.assertEqual(self.client.get(url,headers={**self.headers,'X-Tenant-Id':'other'}).status_code,403)
             response=self.client.get(url,headers={'Authorization':self.headers['Authorization']})
             self.assertEqual(response.status_code,200)
             self.assertEqual(response.content,content)
-            self.assertEqual(response.headers['content-type'],'application/octet-stream')
-            self.assertEqual(response.headers['content-disposition'],'attachment; filename="dicom-viewer.html"')
+            self.assertEqual(response.headers['content-type'],'application/zip')
+            self.assertEqual(response.headers['content-disposition'],'attachment; filename="ct-viewer-saved-dicom.zip"')
             self.assertEqual(response.headers['cache-control'],'no-store')
             path.unlink()
             self.assertEqual(self.client.get(url,headers=self.headers).status_code,404)
@@ -285,7 +287,7 @@ class UploadTests(unittest.TestCase):
         self.assertIsNone(self.jobs.claim('f'*32))
         self.assert_clean()
 
-    def test_swagger_only_exposes_final_html_and_needed_inputs(self):
+    def test_swagger_only_exposes_final_zip_and_needed_inputs(self):
         schema=self.client.get('/openapi.json').json()
         operation=schema['paths']['/v1/upload/']['post']
         self.assertEqual(operation['security'],[{'ServiceToken':[]}])
@@ -294,14 +296,14 @@ class UploadTests(unittest.TestCase):
         self.assertNotIn('/v1/uploads/{id}/result',schema['paths'])
         removed={'Idempotency-Key','X-Tenant-Id','X-Actor-Id','X-Operator'}
         self.assertFalse(removed & {p['name'] for p in operation.get('parameters',[])})
-        self.assertEqual(operation['responses']['200']['content']['text/html']['schema']['format'],'binary')
+        self.assertEqual(operation['responses']['200']['content']['application/zip']['schema']['format'],'binary')
         form=operation['requestBody']['content']['multipart/form-data']['schema']['$ref'].split('/')[-1]
         properties=schema['components']['schemas'][form]['properties']
         self.assertNotIn('reuse_segmentation',properties)
         self.assertEqual(properties['series_index']['default'],-1)
         capabilities=self.client.get('/v1/uploads/capabilities',headers=self.headers).json()
         self.assertFalse(capabilities['retention'])
-        self.assertEqual(capabilities['output'],'viewer.html')
+        self.assertEqual(capabilities['output'],'ct-viewer-<result-id>.zip')
 
     def test_model_child_temporary_files_stay_inside_request_cleanup_boundary(self):
         from app.inference.totalseg_adapter import run_segmentation

@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+import zipfile
 
 import nibabel as nib
 import numpy as np
@@ -32,8 +33,9 @@ class ViewerGeometryTests(unittest.TestCase):
     def generate(self, context=None):
         generate_preview(self.root/'ct.nii.gz',self.root/'mask.nii.gz',self.root,
                          {'1':'kidney_left','2':'kidney_right'},standalone_only=True,viewer_context=context)
-        html=(self.root/'viewer.html').read_text()
-        payload=json.loads(html.split('const data=',1)[1].split(';const byId',1)[0])
+        with zipfile.ZipFile(next(self.root.glob('ct-viewer-*.zip'))) as archive:
+            html=archive.read('viewer/index.html').decode()
+            payload=json.loads(archive.read('viewer/data/manifest.json'))
         return payload,html
 
     def test_affine_metadata_matches_exact_permuted_original_voxels(self):
@@ -48,7 +50,7 @@ class ViewerGeometryTests(unittest.TestCase):
         for name,digest in before.items():self.assertEqual(hashlib.sha256((self.root/name).read_bytes()).hexdigest(),digest)
         for panel in ['measurementPanel','editingPanel','mprPanel','surfacePanel']:
             self.assertIn('id="'+panel+'"',html)
-        for token in ['__WORKER_JS__','__EXTENSION_JS__','__DATA__','<script src=']:
+        for token in ['__WORKER_JS__','__EXTENSION_JS__','__DATA__','data:image/']:
             self.assertNotIn(token,html)
         self.assertEqual(self.generate()[0]['original_fingerprint'],data['original_fingerprint'])
 

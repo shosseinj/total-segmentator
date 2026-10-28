@@ -96,9 +96,9 @@ def process(jobs,state):
                 'series_instance_uid':str(volume.datasets[0].SeriesInstanceUID),
                 'frame_of_reference_uid':str(volume.datasets[0].FrameOfReferenceUID)},
             'authenticated_user':{'actor_id':state['actor_id']} if state.get('actor_id') else None}
-        if state.get('html_only'):
-            # Only the HTML needs a temporary mask. No ZIP, DICOM SEG, PNG,
-            # standalone CSS, measurements file or reusable result is produced.
+        if state.get('viewer_only') or state.get('html_only'):
+            # The viewer ZIP needs a temporary native mask, but no DICOM SEG
+            # or reusable inference result. Existing ephemeral cleanup is unchanged.
             nib.save(nib.Nifti1Image(labelmap,volume.affine_ras),results/'masks.nii.gz')
             mark('creating_preview','exporting')
             artifacts=generate_preview(directory/'model/native.nii.gz',results/'masks.nii.gz',results,

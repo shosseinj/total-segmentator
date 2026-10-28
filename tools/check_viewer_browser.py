@@ -1,17 +1,20 @@
 """Exercise real region checkbox and canvas behavior in headless Firefox."""
 import argparse
-from http.server import BaseHTTPRequestHandler,ThreadingHTTPServer
+from functools import partial
+from http.server import SimpleHTTPRequestHandler,ThreadingHTTPServer
 import json
 import os
 from pathlib import Path
 import signal
+import shutil
+import zipfile
 import subprocess
 import tempfile
 import threading
 
 TEST='''<script>
 (async()=>{const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));try{
-for(let n=0;n<160&&!labelPixels;n++)await sleep(50);if(!labelPixels)throw Error('CT label image did not load');
+for(let n=0;n<160&&(!window.ViewerExtension||!labelPixels);n++)await sleep(50);if(!window.ViewerExtension||!labelPixels)throw Error('CT label image did not load');
 if(selected.size!==data.present.length)throw Error('Fresh viewer did not select every detected region');
 const bodyStyle=getComputedStyle(document.body);if(bodyStyle.backgroundColor!=='rgb(249, 250, 251)')throw Error('Default theme was not applied');
 const picker=byId('themePicker');for(const [value,color] of [['isarmed','rgb(53, 111, 124)'],['lungimed','rgb(86, 122, 106)'],['','rgb(0, 101, 248)']]){picker.value=value;picker.dispatchEvent(new Event('change'));await sleep(220);if(getComputedStyle(byId('selectAll')).backgroundColor!==color)throw Error('Theme palette did not switch: '+value);}
@@ -45,7 +48,10 @@ byId('clearRuler').click();if(rulerPoints.length||byId('rulerValue').textContent
 const beforeCine=index;byId('play').click();for(let n=0;n<30&&index===beforeCine;n++)await sleep(50);byId('play').click();if(index===beforeCine||timer)throw Error('Cine playback failed');for(let n=0;n<100&&loading;n++)await sleep(50);
 const previousPixels=labelPixels;document.getElementById(index<data.frames.length-1?'next':'previous').click();
 for(let n=0;n<100&&labelPixels===previousPixels;n++)await sleep(50);if(labelPixels===previousPixels)throw Error('Slice navigation did not update mask');
-await fetch('/report',{method:'POST',body:JSON.stringify({ok:true,regions:data.present.length,selectedTogether:2,coloredPixels:colored,windowHU:true,contours:true,ruler:true,cine:true,persian:true})});
+byId('tabMeasurements').click();for(let n=0;n<200&&!Object.keys(ViewerExtension.state.measurements.edited).length;n++)await sleep(50);if(!Object.keys(ViewerExtension.state.measurements.edited).length)throw Error('Lazy measurements did not load');
+byId('modeMpr').click();for(let n=0;n<200&&ViewerExtension.state.planes.length!==3;n++)await sleep(50);if(ViewerExtension.state.planes.length!==3)throw Error('Lazy MPR did not load');
+byId('tabEditing').click();for(let n=0;n<200&&!byId('editStatus').textContent.includes('آماده است');n++)await sleep(50);if(!ViewerExtension.state.localProcessor||!byId('editStatus').textContent.includes('آماده است'))throw Error('Local editing engine did not load');
+await fetch('/report',{method:'POST',body:JSON.stringify({ok:true,regions:data.present.length,selectedTogether:2,coloredPixels:colored,windowHU:true,contours:true,ruler:true,cine:true,persian:true,lazyMeasurements:true,lazyMpr:true,lazyEditing:true})});
 }catch(error){await fetch('/report',{method:'POST',body:JSON.stringify({ok:false,error:String(error)})});}})();
 </script>'''
 
@@ -53,41 +59,45 @@ await fetch('/report',{method:'POST',body:JSON.stringify({ok:true,regions:data.p
 def main():
     parser=argparse.ArgumentParser(description=__doc__);parser.add_argument('viewer',type=Path)
     parser.add_argument('--browser',choices=['firefox','chromium'],default='firefox')
-    parser.add_argument('--offline',action='store_true',help='Open a standalone file:// copy in an empty directory.')
+    parser.add_argument('--offline',action='store_true',help='Extract the package and open index.html directly using file://.')
     args=parser.parse_args()
-    document=args.viewer.read_text().replace('</body>',TEST+'</body>')
     completed=threading.Event();report={}
-    class Handler(BaseHTTPRequestHandler):
-        def log_message(self,*args):pass
-        def do_GET(self):
-            if self.path!='/viewer':self.send_error(404);return
-            payload=document.encode();self.send_response(200);self.send_header('Content-Type','text/html; charset=utf-8');self.send_header('Content-Length',str(len(payload)));self.end_headers();self.wfile.write(payload)
-        def do_POST(self):
-            if self.path!='/report':self.send_error(404);return
-            report.update(json.loads(self.rfile.read(int(self.headers['Content-Length']))))
-            self.send_response(200);self.send_header('Access-Control-Allow-Origin','*');self.end_headers();completed.set()
-    with ThreadingHTTPServer(('127.0.0.1',0),Handler) as server, tempfile.TemporaryDirectory(prefix='viewer-browser-check-',dir='work') as directory:
-        thread=threading.Thread(target=server.serve_forever,daemon=True);thread.start()
-        profile=Path(directory).resolve()/'profile';profile.mkdir()
-        url=f'http://127.0.0.1:{server.server_port}/viewer'
-        if args.offline:
-            standalone=Path(directory).resolve()/'viewer.html'
-            standalone.write_text(document.replace("fetch('/report'",f"fetch('http://127.0.0.1:{server.server_port}/report'"))
-            url=standalone.as_uri()
-        command=['firefox','--headless','--no-remote','--profile',str(profile),url] if args.browser=='firefox' else ['chromium','--headless','--disable-gpu','--no-first-run','--no-default-browser-check','--disable-background-networking','--user-data-dir='+str(profile),url]
-        with (Path(directory)/'browser.log').open('w') as log:
-            child=subprocess.Popen(command,stdout=log,stderr=log,start_new_session=True)
-            try:
-                if not completed.wait(35):
-                    print((Path(directory)/'browser.log').read_text()[-2000:])
-                    raise SystemExit('VIEWER_BROWSER_TEST_TIMEOUT')
-                if not report.get('ok'):raise SystemExit('VIEWER_BROWSER_TEST_FAILED: '+report.get('error','unknown'))
-                print('MULTI_REGION_CHECKBOX_BROWSER_OK',args.browser,'file' if args.offline else 'http',json.dumps(report))
-            finally:
-                os.killpg(child.pid,signal.SIGTERM)
-                try:child.wait(timeout=5)
-                except subprocess.TimeoutExpired:os.killpg(child.pid,signal.SIGKILL);child.wait(timeout=5)
-                server.shutdown()
+    with tempfile.TemporaryDirectory(prefix='viewer-browser-check-',dir='work') as directory:
+        root=Path(directory).resolve()
+        if zipfile.is_zipfile(args.viewer):
+            with zipfile.ZipFile(args.viewer) as archive:archive.extractall(root)
+            viewer=root/'viewer/index.html'
+        else:
+            shutil.copytree(args.viewer.resolve().parent,root/'viewer')
+            viewer=root/'viewer'/args.viewer.name
+        class Handler(SimpleHTTPRequestHandler):
+            def log_message(self,*args):pass
+            def do_POST(self):
+                if self.path!='/report':self.send_error(404);return
+                report.update(json.loads(self.rfile.read(int(self.headers['Content-Length']))))
+                self.send_response(200);self.send_header('Access-Control-Allow-Origin','*');self.end_headers();completed.set()
+        with ThreadingHTTPServer(('127.0.0.1',0),partial(Handler,directory=str(viewer.parent))) as server:
+            thread=threading.Thread(target=server.serve_forever,daemon=True);thread.start()
+            base=f'http://127.0.0.1:{server.server_port}'
+            test=TEST.replace("fetch('/report'",f"fetch('{base}/report'")
+            viewer.write_text(viewer.read_text().replace('</body>',test+'</body>'))
+            profile=root/'profile';profile.mkdir()
+            url=viewer.as_uri() if args.offline else base+'/index.html'
+            command=['firefox','--headless','--no-remote','--profile',str(profile),url] if args.browser=='firefox' else ['chromium','--headless','--disable-gpu','--no-first-run','--no-default-browser-check','--disable-background-networking','--user-data-dir='+str(profile),url]
+            with (root/'browser.log').open('w') as log:
+                child=subprocess.Popen(command,stdout=log,stderr=log,start_new_session=True)
+                try:
+                    if not completed.wait(35):
+                        print((root/'browser.log').read_text()[-2000:])
+                        raise SystemExit('VIEWER_BROWSER_TEST_TIMEOUT')
+                    if not report.get('ok'):raise SystemExit('VIEWER_BROWSER_TEST_FAILED: '+report.get('error','unknown'))
+                    print('MULTI_REGION_CHECKBOX_BROWSER_OK',args.browser,'file' if args.offline else 'http',json.dumps(report))
+                finally:
+                    os.killpg(child.pid,signal.SIGTERM)
+                    try:child.wait(timeout=5)
+                    except subprocess.TimeoutExpired:os.killpg(child.pid,signal.SIGKILL);child.wait(timeout=5)
+                    server.shutdown()
+
 
 
 if __name__=='__main__':main()

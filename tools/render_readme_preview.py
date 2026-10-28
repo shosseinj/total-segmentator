@@ -4,6 +4,10 @@ No patient files, service credentials, GPU inference or network assets are used.
 Only the requested documentation screenshot is retained.
 """
 import argparse
+from functools import partial
+from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+import threading
+import zipfile
 from pathlib import Path
 import subprocess
 import tempfile
@@ -60,17 +64,23 @@ def main():
         image,masks=phantom();affine=np.diag([1.4,1.4,2.5,1.]);affine[:3,3]=[-179,-179,-60]
         nib.save(nib.Nifti1Image(image,affine),root/'ct.nii.gz')
         nib.save(nib.Nifti1Image(masks,affine),root/'masks.nii.gz')
-        generate_preview(root/'ct.nii.gz',root/'masks.nii.gz',results,
+        artifacts=generate_preview(root/'ct.nii.gz',root/'masks.nii.gz',results,
                          {str(n):name for n,name in TOTAL_LABELS.items()},standalone_only=True)
-        viewer=results/'viewer.html'
+        with zipfile.ZipFile(results/artifacts['viewer']) as archive:archive.extractall(results)
+        viewer=results/'viewer/index.html'
         banner='<div style="padding:12px 24px;background:#142031;color:#fff;font:14px Arial;direction:ltr;text-align:center">SYNTHETIC DEMO · Illustrative shapes and masks · Not a patient scan or model prediction</div>'
         viewer.write_text(viewer.read_text().replace('<body>','<body>'+banner))
-        # Virtual time allows embedded slice images to decode before capture.
+        # Serve the actual extracted package; file:// cannot fetch sibling data.
         command=['chromium','--headless','--disable-gpu','--no-first-run','--no-default-browser-check',
                  '--disable-background-networking','--user-data-dir='+str(root/'profile'),
                  '--window-size=1600,1500','--virtual-time-budget=5000','--hide-scrollbars',
-                 '--screenshot='+str(output),viewer.as_uri()]
-        subprocess.run(command,check=True,capture_output=True,text=True,timeout=45)
+                 '--screenshot='+str(output)]
+        with ThreadingHTTPServer(('127.0.0.1',0),partial(SimpleHTTPRequestHandler,directory=str(viewer.parent))) as server:
+            threading.Thread(target=server.serve_forever,daemon=True).start()
+            try:
+                command.append(f'http://127.0.0.1:{server.server_port}/index.html')
+                subprocess.run(command,check=True,capture_output=True,text=True,timeout=45)
+            finally:server.shutdown()
         if not output.is_file():raise SystemExit('SCREENSHOT_NOT_CREATED')
         print('SYNTHETIC_VIEWER_SCREENSHOT',output)
 

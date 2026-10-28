@@ -45,7 +45,7 @@ try{
  await sleep(300);
  let downloadedBytes=0;
  if(__DOWNLOAD_SAVED__){
-  const savedPath=await waitFor(()=>[...document.querySelectorAll('.opblock-summary-path')].find(node=>node.textContent.trim()==='/v1/exports/dicom-viewer.html'));
+  const savedPath=await waitFor(()=>[...document.querySelectorAll('.opblock-summary-path')].find(node=>node.textContent.trim()==='/v1/exports/dicom-viewer.zip'));
   const saved=savedPath.closest('.opblock');
   await report({stage:'opening-saved-download',operationId:saved.id,links:[...saved.querySelectorAll('a[href]')].map(a=>a.getAttribute('href'))});
   document.querySelector('a[href="#/Saved%20results/download_saved_dicom_viewer"]').click();
@@ -54,7 +54,7 @@ try{
   await waitFor(()=>saved.querySelector('.execute'));
   await report({stage:'downloading-saved-viewer'});
   saved.querySelector('.execute').click();
-  const link=await waitFor(()=>saved.querySelector('a[download="dicom-viewer.html"]'),400);
+  const link=await waitFor(()=>saved.querySelector('a[download="ct-viewer-saved-dicom.zip"]'),400);
   const blob=await(await fetch(link.href)).blob();
   downloadedBytes=blob.size;
   if(downloadedBytes<10000)throw Error('Saved viewer download is incomplete');

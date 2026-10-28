@@ -1,9 +1,7 @@
-"""Self-contained CT/mask preview from real voxels; no external assets or services."""
+"""Lossless CT/mask viewer package from real voxels; no external services."""
 import base64
 import io
-import json
 import os
-import re
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -17,6 +15,7 @@ from app.export.persian import persian_name
 from app.export.theme import browser_theme
 from app.export.viewer_geometry import viewer_geometry, original_fingerprint
 from app.export.viewer_precompute import precompute_viewer
+from app.export.viewer_package import build_viewer_package
 
 
 def png_data(array):
@@ -76,22 +75,12 @@ def generate_preview(native_path,masks_path,directory,labels,standalone_only=Fal
         authenticated_user=context.get('authenticated_user'),
         original_fingerprint=original_fingerprint(image,segmentation,geometry))
     payload['precomputed']=precompute_viewer(image,segmentation,geometry,labels,hu_offset,hu_step)
+    package=build_viewer_package(payload,directory)
+    if standalone_only:return {'viewer':package.name}
     theme=browser_theme()
-    assets=Path(__file__).parent
-    html=(TEMPLATE.replace('__THEME_CSS__',theme)
-          .replace('__EXTENSION_CSS__',(assets/'viewer_extension.css').read_text())
-          .replace('__EXTENSION_HTML__',(assets/'viewer_extension.html').read_text())
-          .replace('__WORKER_JS__',(assets/'viewer_worker.js').read_text())
-          .replace('__EXTENSION_JS__',(assets/'viewer_extension.js').read_text())
-          .replace('__SURFACE_JS__',(assets/'viewer_surface.js').read_text())
-          .replace('__DATA__',json.dumps(payload,separators=(',',':')).replace('<','\\u003c')))
-    if standalone_only:
-        html=re.sub(r'<h2>دریافت نتیجه</h2><div class="downloads">.*?</div>','<p class="small">فقط همین نمایشگر تحویل داده می‌شود؛ فایل‌های پردازش روی سرور نگه‌داری نمی‌شوند.</p>',html)
-    atomic_write(directory/'viewer.html',html)
-    if standalone_only:return {'viewer':'viewer.html'}
     atomic_write(directory/'theme.css',theme)
     static_preview(windowed,segmentation,selected,directory/'preview.png',colors)
-    return {'viewer':'viewer.html','preview':'preview.png','theme':'theme.css'}
+    return {'viewer':package.name,'preview':'preview.png','theme':'theme.css'}
 
 
 def static_preview(image,mask,index,path,colors):
@@ -108,6 +97,3 @@ def static_preview(image,mask,index,path,colors):
     fig.suptitle(f'Axial slice {index+1} / {image.shape[2]} · unreviewed',color='#aeb9c8',fontsize=11)
     fig.tight_layout();fig.savefig(path,dpi=130,facecolor=fig.get_facecolor());plt.close(fig)
     Path(path).chmod(0o600)
-
-
-TEMPLATE=Path(__file__).with_name('viewer_template.html').read_text()

@@ -50,8 +50,8 @@ def create_portable_package(job_directory,artifacts,source_paths,finalize_result
     shutil.copyfile(root/'model/native.nii.gz',results/'ct.nii.gz');(results/'ct.nii.gz').chmod(0o600)
     readme='''بستهٔ مستقل نتیجهٔ ناحیه‌بندی سی‌تی
 
-۱. ZIP را کامل استخراج کنید و viewer.html را در مرورگر باز کنید.
-۲. نمایشگر، تصاویر CT و ماسک همهٔ ناحیه‌ها را در خود دارد؛ به پروژهٔ اصلی، سرور GPU، ورود یا اینترنت نیاز ندارد.
+۱. ZIP را کامل استخراج کنید و بستهٔ ct-viewer-*.zip را نیز استخراج و index.html را باز کنید.
+۲. بستهٔ نمایشگر، تصاویر CT و ماسک همهٔ ناحیه‌ها را همراه دارد؛ به پروژهٔ اصلی، سرور GPU، ورود یا اینترنت نیاز ندارد.
 ۳. روی «انتخاب همه» بزنید؛ برای دیدن عضو دلخواه از «یافتن» و پیمایش برش‌ها استفاده کنید. همهٔ اعضا در یک برش حضور ندارند.
 ۴. ct.nii.gz تصویر CT با مقادیر HU و masks.nii.gz ماسک چندناحیه‌ای روی همان شبکه هستند.
 ۵. جدول شناسهٔ عددی و نام فارسی/لاتین ناحیه‌ها در manifest.json و result.json قرار دارد. شناسه‌ها را از روی رنگ یا ترتیب حدس نزنید.
@@ -59,9 +59,9 @@ def create_portable_package(job_directory,artifacts,source_paths,finalize_result
 ۷. measurements.json اندازه‌گیری‌ها و result.json اطلاعات مدل و پردازش را نگه می‌دارند؛ ناحیه‌های خارج از پوشش تصویر ممکن است ناقص یا خالی باشند.
 ۸. manifest.json فهرست فایل‌ها، هندسه و SHA-256 آن‌ها را دارد. SHA256SUMS با ابزارهای استاندارد قابل بررسی است.
 ۹. می‌توانید همین ZIP را به‌عنوان یک شیء در MinIO نگه‌داری کنید. برای مشاهده، آن را دریافت و استخراج کنید.
-۱۰. برای نمایش مستقیم با یک لینک، viewer.html کامل را نیز به‌صورت یک شیء جدا با Content-Type: text/html; charset=utf-8 و Content-Disposition: inline منتشر کنید. فایل ZIP خودش صفحهٔ HTML را اجرا نمی‌کند.
+۱۰. برای نمایش مستقیم، پوشهٔ استخراج‌شدهٔ viewer را با HTTP/HTTPS سرو کنید و index.html را باز کنید. فایل‌ها باید کنار هم بمانند.
 
-پاسخ مسیر POST /v1/upload/ و فایل viewer.html داخل این ZIP هر دو نمایشگر کامل و مستقل هستند. لینک‌های صفحهٔ پیشرفت API موقت‌اند و جایگزین فایل کامل نیستند.
+پاسخ مسیر POST /v1/upload/ بستهٔ ZIP نمایشگر است. پس از استخراج، فایل‌های پشتیبان نسبت به index.html خودکار بارگذاری می‌شوند.
 این بسته اطلاعات اصلی DICOM را حفظ می‌کند و ناشناس‌سازی نشده است. نتایج خودکار و بازبینی‌نشده‌اند.
 '''
     atomic_write(results/'README-FA.txt',readme)
@@ -70,7 +70,7 @@ def create_portable_package(job_directory,artifacts,source_paths,finalize_result
     files={name:{'size_bytes':path.stat().st_size,'sha256':file_digest(path)} for name,path in paths.items()}
     present={row['label'] for row in result['structures'] if row.get('volume_ml')}
     manifest={'schema_version':'1.0','package_type':'portable_ct_segmentation','job_id':root.name,
-              'viewer_entrypoint':'viewer.html' if 'viewer' in artifacts else None,
+              'viewer_entrypoint':artifacts.get('viewer'),
               'self_contained':True,'viewer_available':'viewer' in artifacts,
               'source_dicom_included':True,'dicom_metadata_preserved':True,
               'review_status':result['review_status'],'model_release':result['model_release'],'quality':result['quality'],

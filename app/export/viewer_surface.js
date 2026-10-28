@@ -36,7 +36,7 @@ class OfflineSurface {
     async add(id){return this.setSelection([...this.entries.keys(),id]);}
     async setSelection(ids){
         this.beforeShow();this.el('surfacePanel').open=true;
-        const available=[...new Set(ids)].filter(id=>this.ui.measurements[this.ui.version][id]?.count);
+        const available=[...new Set(ids)].filter(id=>this.getRow(id)?.count);
         if(!available.length){this.invalidate();this.entries.clear();this.controls();this.el('surfaceStatus').textContent='از فهرست ناحیه‌ها، یک یا چند ناحیهٔ دارای ماسک را انتخاب کنید.';return;}
         if(!this.initialize())return;
         const wanted=new Set(available),missing=[];
@@ -46,7 +46,7 @@ class OfflineSurface {
         if(missing.length)await this.refresh(missing);else{++this.sequence;this.notify('cancelMeshes');}
     }
     fitCamera(){
-        const rows=[...this.entries.values()].filter(e=>e.visible).map(e=>this.ui.measurements[this.ui.version][e.id]).filter(r=>r?.count);if(!rows.length)return;
+        const rows=[...this.entries.values()].filter(e=>e.visible).map(e=>this.getRow(e.id)).filter(r=>r?.count);if(!rows.length)return;
         const lower=[0,1,2].map(a=>Math.min(...rows.map(r=>r.lower[a]))),upper=[0,1,2].map(a=>Math.max(...rows.map(r=>r.upper[a])));
         this.center=lower.map((v,a)=>(v+upper[a])/2);const bounds=this.canvas.getBoundingClientRect(),aspect=bounds.height?bounds.width/bounds.height:1;this.radius=Math.max(1,Math.hypot(...upper.map((v,a)=>v-lower[a]))*.58*Math.max(1,1/Math.max(.1,aspect)));
     }

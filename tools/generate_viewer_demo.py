@@ -27,18 +27,16 @@ def write_export(root, image, masks, affine, labels, *, coded=True, context=None
         segmentation.set_qform(None, code=0)
     nib.save(ct, root/'ct.nii.gz')
     nib.save(segmentation, root/'masks.nii.gz')
-    generate_preview(root/'ct.nii.gz', root/'masks.nii.gz', root, labels,
+    artifacts=generate_preview(root/'ct.nii.gz', root/'masks.nii.gz', root, labels,
                      standalone_only=True, viewer_context=context)
-    viewer=root/'viewer.html'
-    banner='<style>.viewer-app{height:calc(100dvh - 40px)}@media(max-width:980px){.viewer-app{height:auto}}</style><div style="padding:10px;text-align:center;background:#142031;color:white;direction:ltr;font:14px/20px Arial">SYNTHETIC DEMO · Illustrative voxels and masks · No patient data or model prediction</div>'
-    viewer.write_text(viewer.read_text().replace('<body>', '<body>'+banner))
-    return viewer
+    return root/artifacts['viewer']
+
 
 
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--output',type=Path,default=Path('work/viewer-verification'))
-    parser.add_argument('--swagger-sample',action='store_true',help='Write a compact standalone viewer.html for the Swagger sample.')
+    parser.add_argument('--swagger-sample',action='store_true',help='Write a compact viewer ZIP for documentation previews.')
     args=parser.parse_args()
     image,masks=phantom()
     a=np.diag([1.4,1.4,2.5,1.]);a[:3,3]=[-179,-179,-60]

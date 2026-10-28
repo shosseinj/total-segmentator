@@ -1,6 +1,6 @@
 """Server-built viewer derivatives. Original CT/masks and measurements stay native.
 
-Only display MPR is resampled. All derived assets travel inside the offline HTML;
+Only display MPR is resampled. All derived assets travel as separate files inside the viewer ZIP;
 the browser decodes current planes/selected meshes without reconstructing a volume.
 """
 import base64

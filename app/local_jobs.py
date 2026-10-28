@@ -108,7 +108,7 @@ class LocalJobs:
                        'request_digest':digest,'input_sha256':sha.hexdigest(),'input_bytes':size,
                        'created_at':time.time(),'structures':structures,'quality':quality,'reuse_segmentation':reuse_segmentation,
                        'auto_select_series':auto_select_series,'requested_series_index':series_index}
-                if ephemeral:state.update(ephemeral=True,html_only=True,expires_at=time.time()+wait_timeout)
+                if ephemeral:state.update(ephemeral=True,viewer_only=True,expires_at=time.time()+wait_timeout)
                 self.save(state,status='queued',stage='queued',safe_error=None)
                 return self.public(state)
 
@@ -135,7 +135,7 @@ class LocalJobs:
                 return state
         except FileNotFoundError:return None
 
-    def collect_html(self,id,actor):
+    def collect_viewer(self,id,actor):
         """Copy the sole response to RAM and erase all source/intermediate files."""
         with self.lock(id,create=False):
             state=self.authorized(id,actor)

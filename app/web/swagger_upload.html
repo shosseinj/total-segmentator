@@ -1,8 +1,8 @@
 <nav dir="rtl" style="padding:16px 24px;background:#142031;color:white;font:15px Tahoma;line-height:2">
-<strong style="color:#8ee3c1">دریافت HTML؛ فایل‌های موقت آپلود پاک می‌شوند</strong>
-<span style="margin:0 20px">POST /v1/upload/ ← نمایش مرحله‌های پردازش ← دریافت خودکار viewer.html نهایی</span>
-<div>نمونهٔ خروجی: <a href="/docs/samples/viewer.html" target="_blank" rel="noopener noreferrer" style="color:#8ee3c1">نمایش viewer.html</a> · <a href="/docs/samples/viewer.html?download=true" style="color:#8ee3c1">دریافت فایل نمونه</a> <small>— داده‌ها و ماسک‌های مصنوعی؛ بدون اطلاعات بیمار یا پیش‌بینی مدل</small></div>
-<div>نتیجهٔ dicom.zip: <a id="savedViewerLink" href="#/Saved%20results/download_saved_dicom_viewer" style="color:#8ee3c1">دریافت dicom-viewer.html</a> <small>— در بخش Saved results، گزینه‌های Try it out ← Execute ← Download file را بزنید.</small></div>
+<strong style="color:#8ee3c1">دریافت ZIP نمایشگر؛ فایل‌های موقت آپلود پاک می‌شوند</strong>
+<span style="margin:0 20px">POST /v1/upload/ ← نمایش مرحله‌های پردازش ← دریافت خودکار ZIP نمایشگر</span>
+<div>پیش‌نمایش قدیمی تک‌فایلی: <a href="/docs/samples/viewer.html" target="_blank" rel="noopener noreferrer" style="color:#8ee3c1">نمایش viewer.html</a> · <a href="/docs/samples/viewer.html?download=true" style="color:#8ee3c1">دریافت فایل نمونه</a> <small>— داده‌ها و ماسک‌های مصنوعی؛ بدون اطلاعات بیمار یا پیش‌بینی مدل</small></div>
+<div>نتیجهٔ dicom.zip: <a id="savedViewerLink" href="#/Saved%20results/download_saved_dicom_viewer" style="color:#8ee3c1">دریافت ZIP نمایشگر ذخیره‌شده</a> <small>— در بخش Saved results، گزینه‌های Try it out ← Execute ← Download file را بزنید.</small></div>
 <div id="uploadTransfers" aria-live="polite"></div>
 </nav>
 <script>
@@ -36,15 +36,15 @@ window.fetch=async function(input,init){
  try{
   const pending=originalFetch.call(this,input,{...init,headers});poll();const response=await pending;
   if(!response.ok){stop();card.dataset.state='failed';title.textContent='پردازش یا دریافت فایل انجام نشد';let reason='کد HTTP: '+response.status;try{const data=await response.clone().json();reason=data.message_fa||(typeof data.detail==='string'?data.detail:JSON.stringify(data.detail));}catch(error){}details.textContent=reason;return response;}
-  if(!(response.headers.get('Content-Type')||'').startsWith('text/html'))throw Error('پاسخ سرور فایل HTML نهایی نیست.');
+  if(!(response.headers.get('Content-Type')||'').startsWith('application/zip'))throw Error('پاسخ سرور بستهٔ ZIP نمایشگر نیست.');
   stop();title.textContent='دریافت فایل نهایی از سرور…';const blob=await response.blob();
-  const objectUrl=URL.createObjectURL(blob),download=document.createElement('a');download.href=objectUrl;download.download='viewer.html';download.hidden=true;document.body.append(download);download.click();download.remove();setTimeout(()=>URL.revokeObjectURL(objectUrl),60000);
-  card.dataset.state='succeeded';card.dataset.stage='succeeded';title.textContent='فایل نهایی viewer.html دریافت شد';details.textContent='زمان کل: '+number.format(Math.floor((Date.now()-started)/1000))+' ثانیه';
+  const objectUrl=URL.createObjectURL(blob),download=document.createElement('a');download.href=objectUrl;download.download='ct-viewer-'+response.headers.get('X-Job-Id')+'.zip';download.hidden=true;document.body.append(download);download.click();download.remove();setTimeout(()=>URL.revokeObjectURL(objectUrl),60000);
+  card.dataset.state='succeeded';card.dataset.stage='succeeded';title.textContent='بستهٔ ZIP دریافت شد؛ کامل استخراج و START_VIEWER را اجرا کنید';details.textContent='زمان کل: '+number.format(Math.floor((Date.now()-started)/1000))+' ثانیه';
   const selectedIndex=response.headers.get('X-Selected-Series-Index'),selectedSlices=response.headers.get('X-Selected-Series-Slices');if(selectedIndex!==null)details.textContent+=' · سری '+number.format(Number(selectedIndex))+(selectedSlices?' · '+number.format(Number(selectedSlices))+' برش':'');details.textContent+=' · فایل را در پوشهٔ دانلودهای مرورگر باز کنید.';
   // Keep Swagger responsive: display a small download receipt instead of
   // rendering tens of megabytes of embedded CT data in its response panel.
-  const receipt={status:'succeeded',job_id:response.headers.get('X-Job-Id'),downloaded_file:'viewer.html',size_bytes:blob.size,message:'فایل HTML نهایی به‌صورت خودکار دریافت شد.'};
-  const displayHeaders=new Headers(response.headers);for(const name of ['Content-Length','Content-Disposition','Content-Encoding'])displayHeaders.delete(name);displayHeaders.set('Content-Type','application/json');displayHeaders.set('X-API-Response-Type','text/html');
+  const receipt={status:'succeeded',job_id:response.headers.get('X-Job-Id'),downloaded_file:'ct-viewer-'+response.headers.get('X-Job-Id')+'.zip',size_bytes:blob.size,message:'بستهٔ ZIP نمایشگر به‌صورت خودکار دریافت شد.'};
+  const displayHeaders=new Headers(response.headers);for(const name of ['Content-Length','Content-Disposition','Content-Encoding'])displayHeaders.delete(name);displayHeaders.set('Content-Type','application/json');displayHeaders.set('X-API-Response-Type','application/zip');
   return new Response(JSON.stringify(receipt),{status:response.status,headers:displayHeaders});
  }catch(error){stop();card.dataset.state='failed';title.textContent='ارتباط با سرور یا دریافت فایل قطع شد';details.textContent='فایل‌های موقت پاک می‌شوند. برای دریافت نتیجه دوباره فایل را ارسال کنید. '+String(error);throw error;}
 };})();

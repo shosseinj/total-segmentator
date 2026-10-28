@@ -1,186 +1,180 @@
-Extend the existing CT segmentation viewer with ONLY the features specified below.
+Update the existing server-side viewer generator. (/v1/upload/)
 
-TotalSegmentator and the existing infrastructure already work. Implement these additions in the viewer generator so future generated HTML files include them automatically.
+Currently, the server generates one large, self-contained HTML file containing all CT images, segmentation masks, measurements, reconstructed views, and 3D surfaces.
 
-## Scope and preservation rules
+Change its output to a ZIP package containing a lightweight HTML viewer and separate supporting files. Preserve the existing viewer features and load data only when needed.
 
-1. Locate the actual viewer-generation code, templates, and associated viewer assets in the repository. 
-2. Inspect the existing implementation and identify which requested features already exist, are incomplete, or are new. Reuse working functionality.
-3. Preserve:
-   - Persian interface and RTL layout.
-   - Existing themes.
-   - Authentication and login.
-   - CT display and slice navigation.
-   - Structure selection and overlays.
-   - Opacity and contour controls.
-   - Ruler, window/level, zoom, and pan.
-4. Do not change MinIO configuration, buckets, storage paths, database schemas, existing API contracts, authentication, model inference, or deployment configuration.
-5. Limit changes to viewer generation, viewer assets, and the minimal additive propagation of existing geometry metadata required by these features.
-6. Preserve self-contained offline HTML exports and avoid runtime CDN dependencies.
-7. Do not implement HU analysis, reporting, chat assistants, additional models, longitudinal comparison, or other features outside this request.
-8. Distinguish the 117 available classes from the number of nonempty masks. An empty mask does not establish the absence of an organ or disease.
+## 1. Scope
 
-## Feature 1: Automatic measurements
+- Locate and modify the actual viewer generator and its templates/assets.
+- Apply this change to future generated results, not just one exported HTML.
+- Preserve TotalSegmentator, inference, approval, job processing, authentication, and existing MinIO configuration.
+- Do not change MinIO credentials, endpoints, bucket configuration, or original input files.
+- Reuse the existing result-generation and download workflow.
+- Do not rerun inference solely to repackage an existing result.
 
-When a structure is selected, display:
+The intended change is the generated artifact and its loading mechanism.
 
-- Volume in mL.
-- Three-dimensional bounding-box dimensions in mm, with clearly defined axes.
-- Maximum axial cross-sectional area in mm².
-- The corresponding slice and a button to navigate to it.
-- A chart of cross-sectional area across slices; clicking the chart navigates to that slice.
-- Measurement markers showing where the displayed measurements were obtained.
-- An option to save a selected measurement locally.
+## 2. ZIP structure
 
-Calculate measurements using segmentation voxels and validated physical geometry. Never derive physical measurements from screen dimensions, zoom, or canvas scaling.
+Generate a package with a structure similar to:
 
-Define whether the section measurements refer to native acquisition slices or anatomically reconstructed axial slices. Do not silently treat an oblique acquisition plane as a patient-axial plane.
+viewer/
+  index.html
+  assets/
+    viewer.css
+    native-viewer.js
+    lazy-loader.js
+    advanced-viewer.js
+    surface-viewer.js
+    mask-worker.js
+  data/
+    manifest.json
+    measurements.json
+    ct/
+      0000.png
+      0001.png
+      ...
+    masks/
+      0000.png
+      0001.png
+      ...
+    mpr/
+      axial/
+      coronal/
+      sagittal/
+    surfaces/
+      <structure-id>.png
+      ...
+  START_VIEWER.py
+  START_VIEWER.bat
+  START_VIEWER.sh
+  README.txt
 
-Use physical voxel boundaries for bounding-box extents rather than only distances between voxel centers.
+Adapt filenames to the existing implementation when appropriate. Include every required dependency and data file.
 
-Do not label bounding-box dimensions as anatomical length or RECIST diameter.
+Do not include the original large HTML inside the ZIP.
 
-For empty or unavailable masks, show an explicit unavailable/empty state rather than a misleading zero. Flag potentially incomplete structures touching the scan boundary.
+## 3. No folder selection
 
-### Paired-structure comparison
+The HTML must never ask the doctor to select, locate, or upload its supporting directory.
 
-Provide a table for available paired structures, such as the kidneys, showing:
+- Remove directory pickers, folder-selection dialogs, webkitdirectory inputs, and manual asset-location settings.
+- Resolve every supporting file relative to index.html.
+- Use document.baseURI or an equivalent reliable mechanism.
+- Do not use absolute filesystem paths, developer-machine paths, root-relative application paths, or expiring URLs inside the package.
+- The package must continue working when its parent directory is renamed or moved.
+- Support paths containing spaces and non-English characters.
 
-- Left and right volumes.
-- Absolute difference.
-- Percentage difference.
-- Available dimensions.
-- Navigation to each structure.
+All required files are already inside the extracted package.
 
-Use an explicitly displayed formula and reference. For example:
+## 4. Supported opening methods
 
-Percentage difference = 100 × (right volume − left volume) / left volume.
+### Hosted viewing
 
-Handle missing values and a zero reference without producing Infinity or NaN. Do not interpret asymmetry as disease.
+When the extracted directory is served over HTTP or HTTPS, opening index.html must load its sibling assets automatically.
 
-## Feature 2: Physician mask editing
+No folder chooser or manual configuration is permitted.
 
-Add an explicit editing mode with:
+### Local viewing
 
-- Additive brush and eraser.
-- Brush size in mm using validated in-plane spacing.
-- Undo and redo.
-- Original-versus-edited mask comparison.
-- Updated volumes, dimensions, and area charts after edits.
-- Review states: approved, rejected, and needs correction.
-- Reset to the original mask.
+Include launchers that:
 
-Implement current-slice editing first and label it accurately. Do not describe a 2D brush as volumetric editing.
+- Determine their own directory automatically.
+- Serve that directory using Python 3’s standard library.
+- Bind only to 127.0.0.1.
+- Choose an available port.
+- Automatically open index.html in the default browser.
+- Require no package installation and no folder-selection step.
 
-Keep original model masks immutable. Maintain edits as a separate version, and make the active original/edited version clear.
+If index.html is opened directly using file:// and browser restrictions prevent loading its supporting files, show a short instruction to run the included launcher.
 
-Prevent unintended overwriting of another structure. Define and display how brush overlap and erasing behave.
+Do not bypass browser security, require insecure browser flags, or pretend that an HTML page can start a local server by itself.
 
-Changing an approved mask must invalidate its previous approval and require another review.
+## 5. Lazy-loading behavior
 
-### Saving edited versions
+Initial loading must retrieve only:
 
-Save a separate downloadable edit package containing:
+- The viewer interface and lightweight manifest.
+- One initial CT slice.
+- Its corresponding segmentation mask.
 
-- Schema version.
-- Source result identity and available study/series identifiers.
-- Original-data fingerprint.
-- Dimensions and geometry.
-- Label mapping.
-- Changed voxels or edited masks in a documented format.
-- Creation time.
-- Available authenticated user identity.
-- Review state and relationship to the original result.
+Do not load measurements, reconstructed images, 3D surfaces, or the entire volume at startup.
 
-Do not fabricate a user identity when it is unavailable.
+Afterward:
 
-Reuse existing persistence interfaces only if they already support this operation without infrastructure changes. Otherwise, use local download/import and clearly state that edits have not been saved to the server.
+- Slice navigation loads only the requested CT slice and mask.
+- Opening measurements loads measurements.json.
+- Opening the three-plane section loads only the currently visible reconstructed slices.
+- Moving a reconstruction slider loads the newly required slices.
+- Opening 3D initially loads only the focused structure.
+- Additional surfaces load only after an explicit user selection/request.
+- Opening editing loads the editing engine and necessary label data.
+- Editing must not trigger a full CT-volume download unless a specific operation genuinely requires it.
 
-Validate source identity and geometry before importing an edit package. Never overwrite the original model result.
+Shared lightweight metadata may be loaded when an advanced section needs it.
 
-## Feature 3: Synchronized multiplanar views
+Deduplicate concurrent requests, cache reusable results, bound decoded-image memory, and ignore stale results after navigation.
 
-Add:
+Provide loading indicators, useful errors, and retry behavior. A failed slice request must not leave another slice displayed as though it were the requested image.
 
-- Axial, coronal, and sagittal views.
-- Synchronized crosshairs.
-- Aligned segmentation overlays in every view.
-- Correct physical aspect ratios.
-- Coordinate mapping between views.
-- Consistent selected-structure highlighting.
+## 6. Preserve data and features
 
-Use origin, orientation/direction, spacing, and affine geometry from existing source data.
+Preserve:
 
-Inspect the generation pipeline and propagate available metadata into the HTML payload through additive fields. Do not change inference behavior or existing infrastructure.
+- Persian text, RTL layout, themes, and existing controls.
+- CT window/level, zoom, pan, rulers, and slice navigation.
+- Structure selection, overlays, contours, and opacity.
+- Automatic measurements and bilateral comparison.
+- Mask editing, undo/redo, original-versus-edited comparison, and edit export/import.
+- Synchronized multiplanar views and 3D interaction.
 
-Do not invent missing geometry or patient orientation. If reliable metadata is unavailable, identify the missing information and disable the affected anatomical functionality with a clear explanation.
+Preserve numeric CT encoding, label values, geometry, source identity, fingerprints, and measurement precision.
 
-Keep overlays aligned after reorientation or resampling. Use label-preserving nearest-neighbor interpolation for masks.
+Do not convert numeric-data PNGs to JPEG or apply lossy compression.
 
-Reuse suitable libraries already present in the project rather than rebuilding the viewer.
+The existing PNG-encoded surface buffers may remain in that lossless representation, stored separately per structure.
 
-## Feature 4: Interactive 3D structures
+Keep original masks immutable and edited versions separate.
 
-Add an optional 3D surface view with:
+## 7. Server response and publication
 
-- Selected structures rendered in their assigned colors.
-- Independent visibility and opacity controls.
-- Picking a structure to highlight it in the 2D views.
-- Mapping a picked surface point to synchronized crosshairs where supported.
-- Updates after mask edits.
-- Camera reset and basic rotation/zoom controls.
+Return the completed ZIP through the existing download mechanism.
 
-Build geometry using physical spacing and orientation.
+For a direct download response, use:
 
-Continue calculating measurements from voxel masks, not from potentially smoothed display meshes.
+Content-Type: application/zip
+Content-Disposition: attachment; filename="ct-viewer-<safe-result-id>.zip"
 
-Initialize expensive 3D processing only when requested. Keep rendering responsive and release unused meshes and buffers.
+If the application uses asynchronous artifact generation, publish the ZIP through that existing mechanism after generation completes.
 
-## Performance and state management
+Update only consumers that currently expect an HTML artifact so they correctly handle the ZIP.
 
-- Use Web Workers or equivalent background processing for expensive calculations where appropriate.
-- Cache measurements and update only affected results after editing.
-- Avoid retaining every decoded image indefinitely.
-- Show progress and support cancellation for expensive operations.
-- Ignore stale asynchronous results after the selected structure or dataset changes.
-- Preserve existing keyboard controls and mobile responsiveness.
-- Keep added panels collapsible.
-- Keep the original viewer usable even if an optional 3D capability is unavailable.
+Generate the complete package in a temporary staging directory, validate it, and publish the ZIP only after successful completion.
 
-## Implementation order
+A failed build must not replace a valid artifact with a partial ZIP.
 
-1. Audit the viewer generator and available geometry.
-2. Implement automatic measurements and paired-structure comparison.
-3. Implement mask editing, undo/redo, review states, and local version export/import.
-4. Implement synchronized multiplanar views.
-5. Implement the optional 3D view and picking.
-6. Generate a fresh HTML export and verify the complete workflow.
+Use the existing configured output destination. Do not introduce new MinIO infrastructure.
 
-## Verification and acceptance
+## 8. Verification
 
-Verify:
+Verify that:
 
-- Existing viewer features and themes still work.
-- A newly generated HTML file includes the additions.
-- The exported HTML works offline.
-- Original embedded CT data and original masks remain unchanged.
-- Known synthetic masks produce correct volume, dimensions, and section areas.
-- Zoom and pan do not affect measurements or brush coordinates.
-- Brush size remains physically correct with anisotropic pixels.
-- Editing updates measurements and charts; undo/redo restores the expected results.
-- Edited versions can be exported and safely re-imported.
-- Oblique geometry and orientation changes preserve CT-mask alignment.
-- Crosshairs refer to the same physical location in all three views.
-- 3D picking selects the correct structure.
-- Missing geometry, empty masks, and incomplete coverage produce clear states.
-- There are no new console errors or production-build failures.
+1. New server-generated results return ZIP files.
+2. Each ZIP includes all referenced assets.
+3. index.html contains no embedded scan-sized payload.
+4. No folder picker or asset-location prompt appears.
+5. The extracted package works under an arbitrary HTTP path.
+6. Renaming its directory does not break relative URLs.
+7. The local launcher opens the viewer without asking for a directory.
+8. Startup requests only the initial slice and mask.
+9. Measurements, MPR images, and surfaces load only when requested.
+10. Existing editing and measurement features remain functional.
+11. Extracted numeric assets match the original data.
+12. Missing-file errors and retries work correctly.
+13. Original MinIO and inference workflows remain unchanged.
+14. The ZIP passes an integrity check and the viewer produces no new JavaScript errors.
 
-Validate the additions on a real generated export as well as synthetic geometry fixtures. Do not treat mocked rendering or placeholder buttons as completed features.
+Test an actual server-generated package, not only a manually assembled example.
 
-Deliver:
-1. The generator/template changes.
-2. A newly generated HTML demonstrating the features.
-3. Relevant verification results.
-4. A concise list of completed features and any remaining metadata-related limitations.
-
-Keep MinIO, the backend workflow, and model inference unchanged.
+Deliver the generator changes, a newly generated ZIP, and a concise verification report. Do not stop after providing a plan.

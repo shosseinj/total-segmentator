@@ -1,3 +1,12 @@
+/* Worker and yielding main-thread fallback share exactly the same engine. */
+(function(factory){
+if(typeof document==='undefined'){factory(self,(message,transfer)=>postMessage(message,transfer));return;}
+window.createViewerLocalProcessor=function(){
+const scope={};let stopped=false;
+const processor={onmessage:null,postMessage(message){setTimeout(()=>{if(!stopped)scope.onmessage({data:message});},0);},terminate(){stopped=true;}};
+factory(scope,message=>{if(!stopped)processor.onmessage?.({data:message});});return processor;
+};
+})(function(self,postMessage){
 /* Offline worker. Arrays are x-fast: x + nx * (y + ny*z).
  * Original CT/labels are private and never written after loadSlice().
  * Surfaces are exact exposed voxel faces; all measurements use original-grid voxels.
@@ -257,3 +266,5 @@ self.onmessage = event => {
     } catch(error){postMessage({id,error:String(error.message||error)});}};
     if(['meshes','views','pick'].includes(type))queue.then(run);else queue=queue.then(run);
 };
+
+});

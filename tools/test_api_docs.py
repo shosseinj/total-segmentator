@@ -17,15 +17,10 @@ class ApiDocsTests(unittest.TestCase):
             self.assertIn('href="/docs/samples/viewer.html?download=true"',docs.text)
             schema=client.get('/openapi.json').json()
             operation=schema['paths']['/v1/upload/']['post']
-            self.assertIn('[نمایش viewer.html](/docs/samples/viewer.html)',operation['description'])
             response=operation['responses']['200']
-            example=response['content']['text/html']['examples']['viewer']
-            # External examples are eagerly fetched by Swagger; the complete
-            # embedded viewer must only load after following its link.
-            self.assertNotIn('externalValue',example)
-            self.assertTrue(example['value'].startswith('<!doctype html>'))
-            self.assertLess(len(example['value']),1000)
-            sample_url=operation['externalDocs']['url']
+            self.assertEqual(response['content']['application/zip']['schema']['format'],'binary')
+            self.assertNotIn('text/html',response['content'])
+            sample_url='/docs/samples/viewer.html'
             self.assertNotIn(sample_url,schema['paths'])
             sample=client.get(sample_url)
             self.assertEqual(sample.status_code,200)
@@ -36,7 +31,7 @@ class ApiDocsTests(unittest.TestCase):
             self.assertIn('themePicker',sample.text)
             self.assertNotIn('__DATA__',sample.text)
             download=client.get(sample_url+'?download=true')
-            self.assertEqual(download.headers['content-disposition'],response['headers']['Content-Disposition']['example'])
+            self.assertEqual(download.headers['content-disposition'],'attachment; filename="viewer.html"')
             self.assertEqual(download.content,sample.content)
 
     def test_docs_redirect_and_security_schema(self):

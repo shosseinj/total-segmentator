@@ -2,8 +2,11 @@
 (() => {
 'use strict';
 const el=byId, kinds=['axial','coronal','sagittal'], titles={axial:'Axial',coronal:'Coronal',sagittal:'Sagittal'};
-const pre=data.precomputed?.schema_version===1?data.precomputed:null,planeCache=new Map(),dirtyLabels=new Set();
-const ui={ready:false,version:'edited',focus:Number(data.present[0]||Object.keys(data.labels)[0]),revision:0,processing:pre?'server-precomputed':'legacy-client',localProcessor:false,
+const pre=data.precomputed?.schema_version===1?{...data.precomputed}:null,planeCache=new Map(),dirtyLabels=new Set();
+let metadataLoading=null,measurementsLoading=null;
+function metadata(){if(!metadataLoading)metadataLoading=ViewerLoader.json(pre.metadata_url).then(value=>Object.assign(pre,value)).catch(error=>{metadataLoading=null;throw error;});return metadataLoading;}
+function measurementData(){if(!measurementsLoading)measurementsLoading=ViewerLoader.json(pre.measurements_url).then(value=>pre.measurements=value).catch(error=>{measurementsLoading=null;throw error;});return measurementsLoading;}
+const ui={ready:false,version:'edited',focus:Number(data.present[0]||Object.keys(data.labels)[0]),revision:0,processing:pre?'server-precomputed':'unavailable',localProcessor:false,
     reviews:{},measurements:{original:{},edited:{}},world:null,planes:[],mpr:false,busy:false,loadCancelled:false,view:'native',inspector:'measurements'};
 let worker=null,engineLoading=null,nextId=0,pending=new Map(),loadSession=0,measurementRequest=0,nativeRequest=0,viewRequest=0,viewTimer=null;
 let stroke=null,originalSlice=null,resolveReady,surface=null,selectionSignature='',selectionIdsSignature='',surfaceSelectionTimer=null;
@@ -15,10 +18,9 @@ const fmt=v=>v===null||v===undefined||!Number.isFinite(v)?'ناموجود':fa.fo
 const labelName=n=>data.labels_fa[n]||data.labels[n];
 const activeRow=()=>ui.measurements[ui.version][ui.focus];
 const message=(id,text)=>el(id).textContent=text;
-function showError(error,id='editStatus'){if(!['STALE','CANCELLED'].includes(error.message))message(id,'انجام نشد: '+error.message);}
-function makeWorker(local=false){
-    if(local){worker=createViewerLocalProcessor();ui.localProcessor=true;}
-    else{const url=URL.createObjectURL(new Blob([el('viewerWorkerSource').textContent],{type:'text/javascript'}));try{worker=new Worker(url);}finally{URL.revokeObjectURL(url);}}
+function showError(error,id='editStatus'){if(['STALE','CANCELLED'].includes(error.message))return;message(id,'انجام نشد: '+error.message);const retry=id==='mprStatus'?requestViews:id==='surfaceStatus'?()=>surface?surface.refresh():showView('surface',true):id==='editStatus'&&!worker?()=>ensureLocal().catch(showError):null;if(retry){const button=document.createElement('button');button.textContent='تلاش دوباره';button.onclick=retry;el(id).append(button);}}
+function makeWorker(){
+    worker=createViewerLocalProcessor();ui.localProcessor=true;
     worker.onmessage=event=>{const {id,result,error,progress,value}=event.data,p= pending.get(id);if(!p)return;
         if(progress){p.progress?.(value);return;}pending.delete(id);if(error)p.reject(Error(error));else p.resolve(result);};
     worker.onerror=event=>{ui.ready=false;setEnabled(false);for(const p of pending.values())p.reject(Error(event.message||'WORKER_UNAVAILABLE'));pending.clear();message('analysisStatus','پردازش پس‌زمینه در این مرورگر در دسترس نیست. نمای اصلی همچنان قابل استفاده است.');};
@@ -30,7 +32,8 @@ function engineRpc(type,args={},progress,transfer=[]){
 async function ensureLocal(){
     if(engineLoading)return engineLoading;
     engineLoading=(async()=>{
-        makeWorker(true);message('editStatus','آماده‌سازی ویرایش آفلاین؛ محاسبات تغییرات این نسخه روی همین دستگاه انجام می‌شود…');
+        await ViewerLoader.script('assets/mask-worker.js');
+        makeWorker();message('editStatus','آماده‌سازی ویرایش آفلاین؛ محاسبات تغییرات این نسخه روی همین دستگاه انجام می‌شود…');
         await engineRpc('init',{shape:data.shape,geometry:data.geometry,labels:data.labels,source_identity:data.source_identity,original_fingerprint:data.original_fingerprint,authenticated_user:data.authenticated_user,include_ct:false});
         for(let z=0;z<data.shape[2];z++){
             const mask=await imagePixels(data.overlays[z]),labels=new Uint8Array(mask.width*mask.height);
@@ -47,10 +50,11 @@ function snapWorld(world){
     return world.map((v,a)=>{const s=Object.values(planes).find(p=>p.axes[2]===a),i=Math.max(0,Math.min(s.frames.length-1,Math.round((s.upper[a]-v)/s.step_f-.5)));return s.upper[a]-(i+.5)*s.step_f;});
 }
 async function serverPlanes(world){
+    await metadata();
     return Promise.all(kinds.map(async kind=>{
         const source=pre.mpr.planes[kind],f=source.axes[2],z=Math.max(0,Math.min(source.frames.length-1,Math.round((source.upper[f]-world[f])/source.step_f-.5))),key=kind+':'+z;
         let decoded=planeCache.get(key);
-        if(!decoded){decoded=imagePixels(source.frames[z]).then(image=>{const length=source.width*source.height,pixels=new Uint16Array(length),labels=new Uint8Array(length),valid=new Uint8Array(length);for(let i=0;i<length;i++){pixels[i]=image.pixels[i*4]+256*image.pixels[i*4+1];labels[i]=image.pixels[i*4+2];valid[i]=image.pixels[i*4+3]?1:0;}return {pixels,labels,valid};});planeCache.set(key,decoded);if(planeCache.size>6)planeCache.delete(planeCache.keys().next().value);}
+        if(!decoded){decoded=imagePixels(source.frames[z]).then(image=>{const length=source.width*source.height,pixels=new Uint16Array(length),labels=new Uint8Array(length),valid=new Uint8Array(length);for(let i=0;i<length;i++){pixels[i]=image.pixels[i*4]+256*image.pixels[i*4+1];labels[i]=image.pixels[i*4+2];valid[i]=image.pixels[i*4+3]?1:0;}return {pixels,labels,valid};}).catch(error=>{if(planeCache.get(key)===decoded)planeCache.delete(key);throw error;});planeCache.set(key,decoded);if(planeCache.size>6)planeCache.delete(planeCache.keys().next().value);}
         const {frames,...spec}=source;spec.fixed=source.upper[f]-(z+.5)*source.step_f;
         return {spec,...await decoded};
     }));
@@ -59,6 +63,7 @@ async function rpc(type,args={},progress,transfer=[]){
     if(!pre)return engineRpc(type,args,progress,transfer);
     const original=args.version==='original'||ui.revision===0;
     if(type==='measure'){
+        await measurementData();
         const rows=Object.fromEntries(args.ids.filter(n=>args.version==='original'||!dirtyLabels.has(Number(n))).map(n=>[n,pre.measurements[n]])),remaining=args.ids.filter(n=>!rows[n]);
         if(remaining.length){await ensureLocal();Object.assign(rows,(await engineRpc(type,{...args,ids:remaining})).rows);}
         return {rows,revision:ui.revision,version:args.version};
@@ -70,6 +75,7 @@ async function rpc(type,args={},progress,transfer=[]){
         return {planes,world:args.world,token:args.token,revision:ui.revision,version:args.version};
     }
     if(type==='meshes'){
+        await metadata();
         const meshes=[],remaining=[];
         for(const id of args.ids){if(args.version!=='original'&&dirtyLabels.has(Number(id))){remaining.push(id);continue;}const asset=pre.surfaces.meshes[id];if(!asset)continue;if(asset.unavailable_reason)throw Error(asset.unavailable_reason);const image=await imagePixels(asset.png),bytes=new Uint8Array(asset.byte_length);for(let i=0;i<bytes.length;i++)bytes[i]=image.pixels[Math.floor(i/3)*4+i%3];const vertices=new Float32Array(bytes.buffer);meshes.push({id,vertices,count:asset.count});progress?.(meshes.length/args.ids.length);}
         if(remaining.length){await ensureLocal();meshes.push(...(await engineRpc(type,{...args,ids:remaining},progress)).meshes);}
@@ -147,40 +153,26 @@ function focus(n){
     const row=rows.find(r=>Number(r.check.value)===ui.focus);if(row?.present){selected.add(ui.focus);row.check.checked=true;}
     for(const r of rows)r.row.classList.toggle('focus-region',r===row);
     updateVersion();detail();if(labelPixels)overlay();drawPlanes();surface?.draw();
+    if(ui.view==='surface'&&surface)surface.add(ui.focus).catch(error=>showError(error,'surfaceStatus'));
 }
-async function load(){
-    const session=++loadSession;ui.loadCancelled=false;ui.ready=false;el('analysisLoading').classList.remove('complete');setEnabled(false);el('cancelAnalysis').disabled=false;el('retryAnalysis').hidden=true;
-    try{
-        if(pre){
-            ui.world=snapWorld(point(affine,[(data.shape[0]-1)/2,(data.shape[1]-1)/2,index]));
-            await measure();ui.ready=true;setEnabled(true);selectionChanged(true);
-            message('analysisStatus','اندازه‌گیری، سه‌نما و سطح‌ها روی سرور آماده شده‌اند؛ فقط نمایش روی این دستگاه است.');el('analysisProgress').value=1;el('cancelAnalysis').disabled=true;el('analysisLoading').classList.add('complete');resolveReady(true);await render(index);return;
-        }
-        terminateWorker();makeWorker();await rpc('init',{shape:data.shape,geometry:data.geometry,labels:data.labels,source_identity:data.source_identity,original_fingerprint:data.original_fingerprint,authenticated_user:data.authenticated_user});
-        for(let z=0;z<data.shape[2];z++){
-            if(session!==loadSession||ui.loadCancelled)throw Error('CANCELLED');
-            const [image,mask]=await Promise.all([imagePixels(data.frames[z]),imagePixels(data.overlays[z])]);if(session!==loadSession||ui.loadCancelled)throw Error('CANCELLED');
-            const length=image.width*image.height,pixels=new Uint16Array(length),labels=new Uint8Array(length);
-            for(let i=0;i<length;i++){pixels[i]=image.pixels[i*4]+256*image.pixels[i*4+1];labels[i]=mask.pixels[i*4];}
-            await rpc('loadSlice',{z,pixels,labels},null,[pixels.buffer,labels.buffer]);
-            el('analysisProgress').value=(z+1)/data.shape[2];message('analysisStatus','آماده‌سازی برش '+fmt(z+1)+' از '+fmt(data.shape[2]));
-        }
-        if(session!==loadSession)throw Error('CANCELLED');ui.world=point(affine,[(data.shape[0]-1)/2,(data.shape[1]-1)/2,index]);
-        message('analysisStatus','محاسبهٔ اندازه‌گیری ناحیه‌ها…');await measure();if(session!==loadSession)return;ui.ready=true;setEnabled(true);selectionChanged(true);
-        message('analysisStatus','آماده؛ اندازه‌گیری‌ها از ماسک و هندسهٔ معتبر محاسبه شدند.');el('cancelAnalysis').disabled=true;el('analysisLoading').classList.add('complete');resolveReady(true);await render(index);
-    }catch(error){if(session!==loadSession)return;ui.ready=false;setEnabled(false);el('retryAnalysis').hidden=false;el('cancelAnalysis').disabled=true;showError(error,'analysisStatus');}
+function load(){
+    ++loadSession;ui.ready=!!pre;setEnabled(ui.ready);el('cancelAnalysis').disabled=true;
+    if(!pre){message('analysisStatus','فایل‌های آمادهٔ نماهای پیشرفته موجود نیستند؛ نمای اصلی قابل استفاده است.');resolveReady(false);return;}
+    ui.world=point(affine,[(data.shape[0]-1)/2,(data.shape[1]-1)/2,index]);selectionChanged(true);
+    message('analysisStatus','برای بارگذاری اندازه‌گیری‌ها، بخش اندازه‌گیری را باز کنید.');
+    el('analysisProgress').value=1;el('analysisLoading').classList.add('complete');resolveReady(true);
 }
 async function slice(z,pixels){
     originalSlice=new Uint8ClampedArray(pixels);if(!ui.ready||pre&&(ui.version==='original'||ui.revision===0))return pixels;
     const version=ui.version,request=++nativeRequest,session=loadSession;
     try{const result=await rpc('slice',{z,version});if(request!==nativeRequest||version!==ui.version||session!==loadSession)throw Error('STALE');
         const rgba=new Uint8ClampedArray(pixels);for(let i=0;i<result.pixels.length;i++)rgba[i*4]=result.pixels[i];return rgba;
-    }catch(error){if(error.message==='STALE')throw error;return pixels;}
+    }catch(error){throw error;}
 }
 function nativeRendered(){
     markers.width=ct.width;markers.height=ct.height;
     message('position',affine?'مبدأ صفحه (RAS mm): '+point(affine,[0,0,index]).map(fmt).join(' ، '):'مختصات بیمار ناموجود');
-    if(ui.world){const p=worldToVoxel(ui.world);p[2]=index;ui.world=point(affine,p);positionText();if(ui.mpr)requestViews();}
+    if(ui.world&&ui.view==='native'){const p=worldToVoxel(ui.world);p[2]=index;ui.world=point(affine,p);positionText();if(ui.mpr)requestViews();}
     drawMarkers();drawChart();fitNativeWorld();
 }
 let inverse=null;
@@ -216,8 +208,8 @@ async function mutate(type,args={}){
 }
 function requestViews(){
     if(!ui.mpr||ui.view!=='mpr'||!ui.ready)return;clearTimeout(viewTimer);notify('cancelViews');const token=++viewRequest;
-    if(pre){ui.world=snapWorld(ui.world);positionText();}
-    viewTimer=setTimeout(async()=>{const version=ui.version,captured=ui.revision;message('mprStatus',pre?'بازکردن نماهای آمادهٔ سرور…':'بازسازی نماهای همگام…');try{const result=await rpc('views',{world:ui.world.slice(),version,token});if(token!==viewRequest||!ui.mpr||captured!==ui.revision||version!==ui.version)return;ui.planes=result.planes;drawPlanes();message('mprStatus','سه نما همگام‌اند · برای جابه‌جایی نشانگر روی تصویر کلیک کنید.');}catch(error){showError(error,'mprStatus');}},30);
+    if(ui.planes.length)ui.planeSpecs=ui.planes.map(p=>p.spec);ui.planes=[];for(const kind of kinds){const c=el('mpr'+titles[kind]);c.getContext('2d').clearRect(0,0,c.width,c.height);}
+    viewTimer=setTimeout(async()=>{const version=ui.version,captured=ui.revision;message('mprStatus',pre?'بازکردن نماهای آمادهٔ سرور…':'بازسازی نماهای همگام…');try{if(pre){await metadata();if(token!==viewRequest||ui.view!=='mpr')return;ui.world=snapWorld(ui.world);positionText();}const result=await rpc('views',{world:ui.world.slice(),version,token});if(token!==viewRequest||!ui.mpr||ui.view!=='mpr'||captured!==ui.revision||version!==ui.version)return;ui.planes=result.planes;drawPlanes();message('mprStatus','سه نما همگام‌اند · برای جابه‌جایی نشانگر روی تصویر کلیک کنید.');}catch(error){if(token===viewRequest)showError(error,'mprStatus');}},30);
 }
 function drawPlanes(){
     const mount=el('mprMount');if(!mount.clientWidth||!mount.clientHeight)return;const grid=el('mprPanel').querySelector('.mpr-grid');grid.style.flex='none';grid.style.height=Math.max(180,mount.clientHeight-el('mprPanel').querySelector('.tools').offsetHeight-el('mprPanel').querySelector('.mpr-status').offsetHeight-52)+'px';
@@ -235,7 +227,7 @@ function drawPlanes(){
     }
 }
 function clearMpr(){ui.mpr=false;viewRequest++;clearTimeout(viewTimer);notify('cancelViews');ui.planes=[];for(const kind of kinds){const c=el('mpr'+titles[kind]);c.width=c.height=1;c.style.height='auto';}drawMarkers();message('mprStatus','نماهای بازسازی‌شده آزاد شدند.');}
-for(const kind of kinds){const c=el('mpr'+titles[kind]);c.onclick=e=>{const p=ui.planes.find(p=>p.spec.kind===kind);if(!p)return;const s=p.spec,b=c.getBoundingClientRect(),w=ui.world.slice();w[s.axes[0]]=s.upper[s.axes[0]]-(e.clientX-b.left)/b.width*s.width*s.step_u;w[s.axes[1]]=s.upper[s.axes[1]]-(e.clientY-b.top)/b.height*s.height*s.step_v;navigateWorld(w);};el('mpr'+titles[kind]+'Slice').oninput=e=>{const p=ui.planes.find(p=>p.spec.kind===kind);if(!p)return;const w=ui.world.slice();w[p.spec.axes[2]]=Number(e.target.value);navigateWorld(w);};}
+for(const kind of kinds){const c=el('mpr'+titles[kind]);c.onclick=e=>{const p=ui.planes.find(p=>p.spec.kind===kind);if(!p)return;const s=p.spec,b=c.getBoundingClientRect(),w=ui.world.slice();w[s.axes[0]]=s.upper[s.axes[0]]-(e.clientX-b.left)/b.width*s.width*s.step_u;w[s.axes[1]]=s.upper[s.axes[1]]-(e.clientY-b.top)/b.height*s.height*s.step_v;navigateWorld(w);};el('mpr'+titles[kind]+'Slice').oninput=e=>{const spec=ui.planes.find(p=>p.spec.kind===kind)?.spec||ui.planeSpecs?.find(s=>s.kind===kind);if(!spec)return;const w=ui.world.slice();w[spec.axes[2]]=Number(e.target.value);navigateWorld(w);};}
 function consume(e){e.preventDefault();e.stopImmediatePropagation();}
 stage.addEventListener('pointerdown',e=>{
     if(e.button!==0||!ui.ready||loading)return;
@@ -267,7 +259,7 @@ el('areaSlice').oninput=e=>navigateSection(Number(e.target.value));
 el('areaChart').onclick=e=>{const r=activeRow();if(!r?.count)return;const b=e.target.getBoundingClientRect(),x=(e.clientX-b.left)*640/b.width,s=Math.max(0,Math.min(r.areas.length-1,Math.round((x-28)/(640-56)*(r.areas.length-1))));navigateSection(s);};
 el('saveMeasurement').onclick=()=>download({schema_version:'1.0',source_identity:data.source_identity,original_fingerprint:data.original_fingerprint,geometry:data.geometry,label:ui.focus,label_name:data.labels[ui.focus],mask_version:ui.version,measurement:activeRow(),selected_measurements:[...selected].map(n=>({label:n,label_name:data.labels[n],measurement:ui.measurements[ui.version][n]})),created_at:new Date().toISOString(),saved_to_server:false},'CT-measurement-'+ui.focus+'.json');
 el('cancelAnalysis').onclick=()=>{ui.loadCancelled=true;++loadSession;terminateWorker();ui.ready=false;setEnabled(false);message('analysisStatus','آماده‌سازی لغو شد؛ نمای اصلی قابل استفاده است.');el('retryAnalysis').hidden=false;el('cancelAnalysis').disabled=true;};
-el('retryAnalysis').onclick=load;
+el('retryAnalysis').onclick=openMeasurements;
 el('startMpr').onclick=()=>{showView('mpr');el('mprPanel').open=true;ui.mpr=true;positionText();requestViews();drawMarkers();};
 el('cancelMpr').onclick=clearMpr;
 el('mprPanel').addEventListener('toggle',()=>{if(!el('mprPanel').open&&ui.mpr)clearMpr();});
@@ -279,15 +271,17 @@ function fitNativeWorld(){
     const spacing=data.geometry?.valid?data.geometry.spacing_mm:[1,1,1],aspect=data.shape[0]*spacing[0]/(data.shape[1]*spacing[1]),width=stage.clientWidth,height=stage.clientHeight;if(!width||!height)return;
     const fittedWidth=Math.min(width,height*aspect);world.style.width=fittedWidth+'px';world.style.height=(fittedWidth/aspect)+'px';
 }
-function showView(mode,initialize=false){
+async function showView(mode,initialize=false){
     if(initialize&&mode!=='native'&&!ui.ready)return;ui.view=mode;if(mode!=='native'){el('editingEnabled').checked=false;updateVersion();}
     el('nativeView').hidden=mode!=='native';el('mprMount').hidden=mode!=='mpr';el('surfaceMount').hidden=mode!=='surface';
     for(const button of document.querySelectorAll('[data-view]')){const active=button.dataset.view===mode;button.classList.toggle('active',active);button.setAttribute('aria-pressed',String(active));}
     if(mode==='mpr'){el('mprPanel').open=true;if(initialize)el('startMpr').click();}
-    if(mode==='surface'){el('surfacePanel').open=true;if(initialize)surface?.setSelection([...selected]);}
+    if(mode==='surface'){el('surfacePanel').open=true;if(initialize){try{await metadata();await ViewerLoader.script('assets/surface-viewer.js');if(!surface){surface=new OfflineSurface({el,rpc,notify,ui,data,focus,navigateWorld,showError,getSelected:()=>[...selected],beforeShow:()=>showView('surface'),getRow:n=>ui.measurements[ui.version][n]||pre.surfaces.structures[n]});window.ViewerExtension.surface=surface;}if(ui.view==='surface')await surface.setSelection([ui.focus]);}catch(error){showError(error,'surfaceStatus');}}}
     requestAnimationFrame(()=>{fitNativeWorld();drawPlanes();surface?.draw();});
 }
+async function openMeasurements(){el('analysisLoading').classList.remove('complete');message('analysisStatus','در حال بارگذاری اندازه‌گیری‌ها…');el('retryAnalysis').hidden=true;try{await measure();message('analysisStatus','اندازه‌گیری‌ها آماده‌اند.');el('analysisLoading').classList.add('complete');}catch(error){showError(error,'analysisStatus');el('retryAnalysis').hidden=false;}}
 function showInspector(name){
+    if(name==='measurements')openMeasurements();else ensureLocal().catch(showError);
     ui.inspector=name;const editing=name==='editing';if(!editing){el('editingEnabled').checked=false;updateVersion();}el('editingPanel').hidden=!editing;el('measurementPanel').hidden=editing;el(editing?'editingPanel':'measurementPanel').open=true;
     for(const [id,active] of [['tabEditing',editing],['tabMeasurements',!editing]]){el(id).classList.toggle('active',active);el(id).setAttribute('aria-pressed',String(active));}
 }
@@ -301,7 +295,7 @@ function selectionChanged(force=false){
     for(const item of rows){const n=Number(item.check.value),r=ui.measurements[ui.version][n];item.row.classList.toggle('focus-region',n===ui.focus&&selected.has(n));if(!item.volumeNode){item.volumeNode=document.createElement('span');item.volumeNode.className='region-volume';item.row.insertBefore(item.volumeNode,item.row.querySelector('.go'));}item.volumeNode.textContent=r?.count?fmt(r.volume_ml)+' mL':'';}
     for(const button of document.querySelectorAll('[data-select-group]'))button.disabled=!rows.some(row=>row.present&&data.labels[row.check.value].includes(button.dataset.selectGroup));
     filter();detail();
-    if(idsChanged&&ui.view==='surface'&&surface?.gl){clearTimeout(surfaceSelectionTimer);surfaceSelectionTimer=setTimeout(()=>surface.setSelection([...selected]),120);}
+    if(idsChanged&&ui.view==='surface'&&surface?.gl){surface.setSelection([...surface.entries.keys()].filter(n=>selected.has(n)));}
 }
 for(const button of document.querySelectorAll('[data-view]'))button.onclick=()=>showView(button.dataset.view,true);
 el('tabMeasurements').onclick=()=>showInspector('measurements');el('tabEditing').onclick=()=>showInspector('editing');
@@ -318,6 +312,7 @@ if(typeof ResizeObserver!=='undefined'){const observer=new ResizeObserver(()=>{f
 selectionChanged(true);requestAnimationFrame(fitNativeWorld);
 window.ViewerExtension={state:ui,ready,rpc,focus,slice,nativeRendered,drawMarkers,
     value:n=>ui.ready?ui.measurements[ui.version][n]?.volume_ml:data.geometry?.valid?data.volumes_ml[n]:null,
+    clearNativeMarkers:()=>markerCtx.clearRect(0,0,markers.width,markers.height),
     afterOverlay:()=>{selectionChanged();drawMarkers();drawPlanes();},navigateWorld,navigateSection,worldToVoxel,point,measure,mutate,download,
     showView,showInspector,selectionChanged,selected,exportPackage:()=>rpc('export'),importPackage:async p=>{const r=await rpc('import',{package:p});await changed(r);return r;}};
 if(!data.geometry?.valid){
@@ -341,6 +336,5 @@ const sectionLabel=el('slice').nextElementSibling?.firstElementChild;if(sectionL
 const originalDrawRuler=drawRuler;drawRuler=function(){originalDrawRuler();if(rulerPoints.length===2){const [a,b]=rulerPoints,d=[a.x-b.x,a.y-b.y,0],mm=Math.hypot(...affine.slice(0,3).map(row=>row[0]*d[0]+row[1]*d[1]));message('rulerValue','فاصلهٔ درون همین برش: '+fmt(mm)+' میلی‌متر');}};
 message('geometry',data.shape.map(fmt).join(' × ')+' وکسل · فاصلهٔ معتبر: '+data.geometry.spacing_mm.map(fmt).join(' × ')+' میلی‌متر');
 fitNativeWorld();
-try{surface=new OfflineSurface({el,rpc,notify,ui,data,focus,navigateWorld,showError,getSelected:()=>[...selected],beforeShow:()=>showView('surface')});window.ViewerExtension.surface=surface;}catch(error){showError(error,'surfaceStatus');}
 load();
 })();

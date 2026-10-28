@@ -1,8 +1,8 @@
 # TotalSegmentator GPU API
 
-Upload a ZIP containing CT DICOM files and receive a complete, standalone **`viewer.html`** file. The service runs TotalSegmentator on an NVIDIA GPU and supports all **117 regions** in the CT `total` task: organs, vessels, muscles and bones.
+Upload a ZIP containing CT DICOM files and receive a complete **`ct-viewer-<result-id>.zip`** package. The service runs TotalSegmentator on an NVIDIA GPU and supports all **117 regions** in the CT `total` task: organs, vessels, muscles and bones.
 
-The direct-upload workflow uses this server's GPU and temporary disk space. It does **not** use PostgreSQL, Redis or MinIO. Your main application can receive the HTML response and store it wherever you choose.
+The direct-upload workflow uses this server's GPU and temporary disk space. It does **not** use PostgreSQL, Redis or MinIO. Your main application can receive the ZIP response and store it wherever you choose.
 
 ## What the output looks like
 
@@ -10,17 +10,17 @@ The direct-upload workflow uses this server's GPU and temporary disk space. It d
 
 *Screenshot of the actual HTML viewer, populated with a synthetic phantom and illustrative masks. It contains no patient data and does not demonstrate model accuracy. The clinical interface is currently Persian and right-to-left; this guide is in English.*
 
-The response is one HTML file containing:
+The ZIP contains `viewer/index.html`, separate local assets, lossless CT/mask PNGs, measurements, reconstructed images and per-structure surfaces:
 
-- CT slices and segmentation labels embedded inside the file.
+- CT slices and segmentation labels loaded only as requested. Lossless `.png.js` companions provide the same numeric PNG bytes when opened directly from disk; `.json.js` companions provide local metadata without fetching local JSON.
 - Multiple organ checkboxes, search, select all/none, and jump to an organ's slice.
 - Slice navigation and cine playback.
 - Soft-tissue, lung, bone and brain window presets, manual HU windowing and inversion.
 - Zoom, pan, fullscreen, an in-plane millimetre ruler and a slice snapshot button.
 - Overlay opacity, mask contours, region volumes and voxel spacing.
-- Embedded CSS from [`theme.css`](theme.css), including the available theme palettes.
+- Local CSS from [`theme.css`](theme.css), including the available theme palettes.
 
-Open the downloaded file in a browser. It works offline without this API, the original project, external JavaScript or a GPU. This version displays **axial slices**, not three-plane reconstruction or a 3D surface viewer. Regions outside the scan's coverage will not have nonempty masks. Automatic segmentation requires clinical review.
+Extract the entire ZIP and double-click `viewer/index.html`. No Python, launcher, installation or local server is required. The HTML loads its sibling assets automatically, including under `file://`. Keep the HTML, `assets/` and `data/` together; moving or renaming the folder is supported. For hosted viewing, serve the same directory over HTTP/HTTPS under any URL prefix. Measurements, synchronized three-plane views, 3D surfaces and mask editing load on demand. Startup retrieves only the manifest/interface and one CT/mask pair. It works offline without this API, the original project or a GPU. Regions outside the scan's coverage will not have nonempty masks. Automatic segmentation requires clinical review.
 
 ## Quick launch on the prepared GPU server
 
@@ -38,7 +38,7 @@ bash run-native.sh start-local
 | --- | --- |
 | `http://127.0.0.1:8096/docs` | Swagger UI on the GPU server |
 | `http://<GPU_SERVER_IP>:8096/docs` | Swagger UI from another machine |
-| `http://<GPU_SERVER_IP>:8096/v1/upload/` | ZIP upload; returns the final HTML |
+| `http://<GPU_SERVER_IP>:8096/v1/upload/` | ZIP upload; returns the viewer ZIP |
 | `http://<GPU_SERVER_IP>:8096/health/live` | API liveness |
 
 Use the server's LAN IP, shown by `hostname -I`, in place of `<GPU_SERVER_IP>`. `0.0.0.0` is a listening address, not the address to enter on another machine.
@@ -194,20 +194,28 @@ Treat the file as literal configuration data: **do not `source` it**. The native
 
 ## Upload from Swagger
 
-Swagger includes links to view or download a sample above the form and in the `/v1/upload/` response documentation. The sample is a complete interactive HTML viewer built with synthetic voxels and illustrative masks; it contains no patient data or model predictions. You can open it without uploading a ZIP or running inference.
+Swagger includes links to a legacy single-file synthetic preview above the form; new upload responses use the ZIP format described below. The sample is a complete interactive HTML viewer built with synthetic voxels and illustrative masks; it contains no patient data or model predictions. You can open it without uploading a ZIP or running inference.
 
 1. Open `/docs` and expand **POST `/v1/upload/`**.
 2. If automatic authorization is disabled, click **Authorize** and paste `SEG_SERVICE_TOKEN` from your private configuration, without the `Bearer` prefix.
 3. Click **Try it out**, select a ZIP, keep `structures=all` and `series_index=-1`, then click **Execute**.
-4. Watch the processing stages above the Swagger form. The finished `viewer.html` downloads automatically; open it from your browser's downloads folder.
+4. Watch the processing stages above the Swagger form. The finished `ct-viewer-<result-id>.zip` downloads automatically; extract it fully and double-click `viewer/index.html`.
 
 For temporary testing, `SEG_SWAGGER_AUTO_AUTHORIZE=true` makes Swagger fill the token automatically. This exposes the token to anyone who can open that docs page. Keep it `false` for normal integration and restart the API after changing it. API clients always need a Bearer token regardless of this UI setting.
 
-The actual HTTP response is **HTML**. Swagger displays a small JSON download receipt to avoid rendering a large embedded CT file in its response panel; that receipt is not the API's wire response.
+The actual HTTP response is **application/zip**. Swagger displays a small JSON download receipt to show successful delivery in its response panel; that receipt is not the API's wire response.
 
-After changing the viewer, regenerate the bundled sample with `"$SEG_PYTHON" -m tools.generate_viewer_demo --swagger-sample --output app/web/samples`.
+Generate a fresh compact synthetic package with `"$SEG_PYTHON" -m tools.generate_viewer_demo --swagger-sample --output work/synthetic-package`.
 
-To download the manually saved `exports/dicom-viewer.html` from Swagger, expand **GET `/v1/exports/dicom-viewer.html`** under **Saved results**, then click **Try it out → Execute → Download file**. This endpoint requires the service token and serves the saved file without rerunning inference. Swagger receives a binary download so the complete HTML is not rendered in its response panel. The endpoint returns `404` if that saved file is absent; uploads still do not create a result history automatically.
+To download the manually saved `exports/dicom-viewer.zip` from Swagger, expand **GET `/v1/exports/dicom-viewer.zip`** under **Saved results**, then click **Try it out → Execute → Download file**. This authenticated endpoint serves the ZIP without rerunning inference and returns `404` if absent. Uploads do not create a result history automatically. The old `.html` endpoint remains a compatibility alias for this ZIP download.
+
+Repackage a saved server-generated HTML without inference or modifying its input:
+
+```bash
+python3 -m tools.repackage_viewer exports/dicom-viewer.html --output exports
+```
+
+The command prints the new `ct-viewer-<result-id>.zip` path. To serve it through the saved-result endpoint, copy it to `exports/dicom-viewer.zip`.
 
 ## Call the API from your application
 
@@ -222,7 +230,7 @@ curl --fail --show-error --max-time 3700 \
   -F 'quality=standard' \
   -F 'series_index=-1' \
   -F 'wait_timeout=3600' \
-  --output viewer.html
+  --output ct-viewer.zip
 unset SEG_SERVICE_TOKEN
 ```
 
@@ -230,8 +238,8 @@ This is a `multipart/form-data` request. A successful response has:
 
 ```http
 HTTP/1.1 200 OK
-Content-Type: text/html; charset=utf-8
-Content-Disposition: attachment; filename="viewer.html"
+Content-Type: application/zip
+Content-Disposition: attachment; filename="ct-viewer-<result-id>.zip"
 Cache-Control: no-store
 X-Job-Id: <temporary-request-id>
 X-Selected-Series-Index: <selected-index>
@@ -255,12 +263,12 @@ with Path('ct-dicom.zip').open('rb') as source:
         timeout=3700,
     ) as response:
         response.raise_for_status()
-        with Path('viewer.html').open('wb') as target:
+        with Path('ct-viewer.zip').open('wb') as target:
             for chunk in response.iter_bytes():
                 target.write(chunk)
 ```
 
-Store the returned HTML in your own application or MinIO if you need permanent storage. Configure any reverse proxy/client with a timeout long enough for inference; the upload response waits for completion.
+Store the returned ZIP in your own application or MinIO if you need permanent storage. Configure any reverse proxy/client with a timeout long enough for inference; the upload response waits for completion.
 
 ### Request options
 
@@ -280,7 +288,7 @@ Only `Authorization: Bearer <token>` is required for local uploads. Tenant and s
 
 The pipeline receives the ZIP, inventories DICOM series, waits for the shared GPU lock, runs the model, aligns masks and builds the standalone viewer. Swagger polls `/v1/upload/progress` with its automatically generated request key. An authenticated `GET /v1/uploads/{id}` can report a request while it still exists.
 
-**No result history or mask cache is retained.** Before sending a successful response, the API reads the HTML into memory and deletes the entire request directory: original ZIP, extracted DICOM, CT, masks, model intermediates and HTML. There are no companion ZIP, SEG, NIfTI or JSON downloads in this mode. Model weights remain installed. A new upload runs inference again.
+**No result history or mask cache is retained.** Before sending a successful response, the API reads the completed ZIP into memory and deletes the entire request directory: original ZIP, extracted DICOM, CT, masks, model intermediates and staged viewer files. All viewer dependencies are inside the returned ZIP; this mode does not export source DICOM or NIfTI files. Model weights remain installed. A new upload runs inference again.
 
 Failure also triggers cleanup. Queued timeouts/disconnections remove the input immediately; active inference is marked for cancellation and cleaned after the child exits. The model cancellation guard checks at most every 30 seconds. Worker/API recovery also reaps orphaned temporary requests. After cleanup, the request status returns `404`.
 
@@ -295,7 +303,7 @@ Failure also triggers cleanup. Queued timeouts/disconnections remove the input i
 | `422 MODEL_FAILED` / `GPU_OOM` | Check the local worker, installed models and GPU resources |
 | `504 RESULT_WAIT_TIMEOUT` | The wait expired; work is cancelled/cleaned. Re-upload to try again |
 
-Errors return JSON, not an incomplete HTML file. `POST /v1/uploads` is a compatibility alias that also returns the final HTML; it no longer returns an asynchronous JSON result link.
+Errors return JSON. Failed builds never publish a partial ZIP. `POST /v1/uploads` is a compatibility alias that also returns the completed ZIP; it no longer returns an asynchronous JSON result link.
 
 ## Optional connected-clinic workflow
 

@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+import zipfile
 
 import nibabel as nib
 import numpy as np
@@ -22,21 +23,24 @@ class PreviewTests(unittest.TestCase):
             nib.save(nib.Nifti1Image(ct,np.eye(4)),root/'ct.nii.gz')
             nib.save(nib.Nifti1Image(mask,np.eye(4)),root/'mask.nii.gz')
             generate_preview(root/'ct.nii.gz',root/'mask.nii.gz',root,{'1':'spleen','85':'test_region','117':'empty_region'})
-            html=(root/'viewer.html').read_text()
-            data=json.loads(html.split('const data=',1)[1].split(';const byId',1)[0])
-            image=np.asarray(Image.open(io.BytesIO(base64.b64decode(data['frames'][0]))))
-            overlay=np.asarray(Image.open(io.BytesIO(base64.b64decode(data['overlays'][0]))))
+            archive=zipfile.ZipFile(next(root.glob('ct-viewer-*.zip')))
+            html=archive.read('viewer/index.html').decode()
+            data=json.loads(archive.read('viewer/data/manifest.json'))
+            image=np.asarray(Image.open(io.BytesIO(archive.read('viewer/'+data['frames'][0]))))
+            overlay=np.asarray(Image.open(io.BytesIO(archive.read('viewer/'+data['overlays'][0]))))
             decoded=(image[:,:,0].astype(np.uint16)+256*image[:,:,1].astype(np.uint16))*data['hu_step']+data['hu_offset']
             np.testing.assert_array_equal(decoded,ct[::-1,::-1,0].T)
             np.testing.assert_array_equal(overlay,mask[::-1,::-1,0].T)
             self.assertEqual(data['present'],[1,85])
             self.assertIn('85',data['colors'])
-            self.assertNotIn('<script src=',html)
+            self.assertIn('assets/lazy-loader.js',html)
+            self.assertNotIn('data:image',html)
+            css=archive.read('viewer/assets/viewer.css').decode()
             self.assertEqual(data['start'],0)
             self.assertEqual(data['labels_fa']['1'],'طحال')
-            self.assertIn('--color-primary: #0065f8',html)
-            self.assertIn(':root[data-app-key="isarmed"]',html)
-            self.assertIn(':root[data-app-key="lungimed"]',html)
+            self.assertIn('--color-primary: #0065f8',css)
+            self.assertIn(':root[data-app-key="isarmed"]',css)
+            self.assertIn(':root[data-app-key="lungimed"]',css)
             self.assertIn('id="themePicker"',html)
             self.assertNotIn('@theme',html)
             self.assertNotIn('@apply',html)
@@ -54,8 +58,9 @@ class PreviewTests(unittest.TestCase):
             nib.save(nib.Nifti1Image(ct,np.eye(4)),root/'ct.nii.gz')
             nib.save(nib.Nifti1Image(np.ones(ct.shape,dtype=np.uint8),np.eye(4)),root/'mask.nii.gz')
             generate_preview(root/'ct.nii.gz',root/'mask.nii.gz',root,{'1':'spleen'})
-            data=json.loads((root/'viewer.html').read_text().split('const data=',1)[1].split(';const byId',1)[0])
-            image=np.asarray(Image.open(io.BytesIO(base64.b64decode(data['frames'][0]))))
+            archive=zipfile.ZipFile(next(root.glob('ct-viewer-*.zip')))
+            data=json.loads(archive.read('viewer/data/manifest.json'))
+            image=np.asarray(Image.open(io.BytesIO(archive.read('viewer/'+data['frames'][0]))))
             decoded=(image[:,:,0].astype(np.uint16)+256*image[:,:,1].astype(np.uint16))*data['hu_step']+data['hu_offset']
             np.testing.assert_allclose(decoded,ct[::-1,::-1,0].T,atol=data['hu_step']/2+1e-4)
 

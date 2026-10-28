@@ -1,4 +1,4 @@
-"""Verify live Swagger progress and automatic final-HTML download in Firefox.
+"""Verify live Swagger progress and automatic final-ZIP download in Firefox.
 
 Uses synthetic DICOM and mocked inference in a temporary job directory.
 """
@@ -22,26 +22,19 @@ from tools.test_uploads import UploadTests,synthetic_dicom_zip
 from fastapi.testclient import TestClient
 from app.main import create_app
 
-TEST='''<script>(async()=>{const sleep=ms=>new Promise(r=>setTimeout(r,ms));try{
+TEST=r'''<script>(async()=>{const sleep=ms=>new Promise(r=>setTimeout(r,ms));try{
  const seen=new Set();let downloads=0,downloadUrl='';
  const observer=new MutationObserver(()=>{for(const item of document.querySelectorAll('.upload-transfer'))if(item.dataset.stage)seen.add(item.dataset.stage);});observer.observe(document.getElementById('uploadTransfers'),{subtree:true,attributes:true,childList:true});
- document.addEventListener('click',e=>{if(e.target instanceof HTMLAnchorElement&&e.target.download==='viewer.html'){downloads++;downloadUrl=e.target.href;}},true);
+ document.addEventListener('click',e=>{if(e.target instanceof HTMLAnchorElement&&/^ct-viewer-[a-f0-9]{32}\.zip$/.test(e.target.download)){downloads++;downloadUrl=e.target.href;}},true);
  const archive=await(await fetch('/fixture.zip')).blob();const body=new FormData();body.append('file',archive,'ct.zip');body.append('wait_timeout','15');body.append('series_index','-1');
  const response=await fetch('/v1/upload/',{method:'POST',headers:__UPLOAD_HEADERS__,body});
- if(response.status!==200)throw Error('Final HTML upload failed: '+response.status);const receipt=await response.json();
- if(receipt.downloaded_file!=='viewer.html'||receipt.size_bytes<10000)throw Error('Download receipt missing');
+ if(response.status!==200)throw Error('Final ZIP upload failed: '+response.status);const receipt=await response.json();
+ if(receipt.downloaded_file!=='ct-viewer-'+receipt.job_id+'.zip'||receipt.size_bytes<10000)throw Error('Download receipt missing');
  if(!/^[a-f0-9]{32}$/.test(response.headers.get('Idempotency-Key')||''))throw Error('Automatic request key missing');
  if(downloads!==1||!downloadUrl.startsWith('blob:'))throw Error('Final file was not automatically downloaded exactly once');
- const html=await(await fetch(downloadUrl)).text();if(!html.includes('const data=')||html.includes('location.replace('))throw Error('Downloaded a launcher instead of the final viewer');
- if(!html.includes('themePicker'))throw Error('Viewer content missing');
- if(html.includes('example-test-token'))throw Error('Service token leaked into result HTML');
+ const bytes=new Uint8Array(await(await fetch(downloadUrl)).arrayBuffer());if(bytes[0]!==80||bytes[1]!==75)throw Error('Downloaded file is not a ZIP');
  const external=await fetch('http://localhost:'+location.port+'/auth-probe',{headers:{Authorization:'Bearer example-test-token'}});
  if((await external.json()).hasAuthorization!==__EXPLICIT_AUTH__)throw Error('Default token origin scoping failed');
- const viewer=document.createElement('iframe');viewer.src=downloadUrl;document.body.append(viewer);
- await new Promise((resolve,reject)=>{viewer.onload=resolve;setTimeout(()=>reject(Error('Standalone viewer did not open')),5000);});
- if(viewer.contentDocument.querySelectorAll('.region input[type=checkbox]').length!==117)throw Error('Standalone viewer organ controls did not initialize');
- if(viewer.contentDocument.querySelector('.downloads'))throw Error('Viewer contains unavailable server file downloads');
- viewer.remove();
  if(!seen.has('running'))throw Error('Live processing stage was not shown');
  if(document.querySelector('.upload-transfer').dataset.state!=='succeeded')throw Error('Progress card did not finish');
  if(!document.querySelector('.upload-transfer').textContent.includes('سری ۱'))throw Error('Automatic series selection was not shown');
@@ -99,13 +92,13 @@ def main():
             downloads=Path(directory).resolve()/'downloads';downloads.mkdir()
             # This isolated synthetic test must not wait on external download
             # reputation checks. The user's browser preferences are untouched.
-            (profile/'user.js').write_text('user_pref("browser.safebrowsing.downloads.enabled",false);\nuser_pref("browser.safebrowsing.downloads.remote.enabled",false);\nuser_pref("browser.download.folderList",2);\nuser_pref("browser.download.dir",'+json.dumps(str(downloads))+');\nuser_pref("browser.helperApps.neverAsk.saveToDisk","text/html,application/octet-stream");\nuser_pref("browser.download.useDownloadDir",true);\nuser_pref("browser.download.always_ask_before_handling_new_types",false);\n')
+            (profile/'user.js').write_text('user_pref("browser.safebrowsing.downloads.enabled",false);\nuser_pref("browser.safebrowsing.downloads.remote.enabled",false);\nuser_pref("browser.download.folderList",2);\nuser_pref("browser.download.dir",'+json.dumps(str(downloads))+');\nuser_pref("browser.helperApps.neverAsk.saveToDisk","application/zip,application/octet-stream");\nuser_pref("browser.download.useDownloadDir",true);\nuser_pref("browser.download.always_ask_before_handling_new_types",false);\n')
             with (Path(directory)/'firefox.log').open('w') as log:
                 child=subprocess.Popen(['firefox','--headless','--no-remote','--profile',str(profile),f'http://127.0.0.1:{server.server_port}/docs'],stdout=log,stderr=log,start_new_session=True)
                 try:
                     if not completed.wait(35):raise SystemExit('UPLOAD_BROWSER_TEST_TIMEOUT')
                     if not report.get('ok'):raise SystemExit('UPLOAD_BROWSER_TEST_FAILED: '+report.get('error','unknown'))
-                    target=downloads/'viewer.html';expected=fixture.produced[report['jobId']]['html']
+                    target=downloads/('ct-viewer-'+report['jobId']+'.zip');expected=fixture.produced[report['jobId']]['zip']
                     for _ in range(200):
                         if target.exists() and target.stat().st_size==len(expected):break
                         time.sleep(.05)
@@ -113,7 +106,7 @@ def main():
                         print('DOWNLOAD_FILES',[(p.name,p.stat().st_size) for p in downloads.iterdir()],'expected_bytes',len(expected))
                         raise SystemExit('AUTOMATIC_DOWNLOADED_FILE_MISMATCH')
                     fixture.assert_clean()
-                    print('FINAL_HTML_AUTODOWNLOAD_BROWSER_OK',json.dumps(report))
+                    print('FINAL_ZIP_AUTODOWNLOAD_BROWSER_OK',json.dumps(report))
                 finally:
                     os.killpg(child.pid,signal.SIGTERM)
                     try:child.wait(timeout=5)
