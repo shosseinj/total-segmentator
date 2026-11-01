@@ -26,6 +26,8 @@ ERROR_STATUS={'ACCESS_DENIED':403,'SOURCE_DENIED':403,'SCOPE_DENIED':403,'IDEMPO
 ERROR_STATUS.update(ARCHIVE_LIMIT=413,CORRUPT_ZIP=422,EMPTY_ZIP=422,ENCRYPTED_ZIP=422,UPLOAD_VERIFY_FAILED=503)
 ERROR_STATUS.update(UPLOAD_NOT_FOUND=404,ARTIFACT_NOT_FOUND=404)
 ERROR_STATUS.update(VIEW_LINK_INVALID=403)
+ERROR_STATUS.update(CT_CLIP_CHECKPOINT_UNAVAILABLE=503,CT_CLIP_INVALID_CONFIG=422)
+ERROR_STATUS.update(REV_CT_CHECKPOINT_UNAVAILABLE=503,REV_CT_MODEL_UNAVAILABLE=503)
 SAVED_VIEWER_PATH=Path(__file__).resolve().parents[1]/'exports'/'dicom-viewer.zip'
 
 def create_app(settings,repository=None,store=None):
@@ -136,8 +138,24 @@ def create_app(settings,repository=None,store=None):
 
     @app.get('/v1/uploads/capabilities',tags=['آپلود ZIP و نتایج'],summary='فهرست ۱۱۷ ناحیهٔ قابل پردازش')
     def local_capabilities(actor=Depends(authenticate_local)):
+        from app.inference.ct_clip_adapter import ABNORMALITIES
+        from app.inference.abnormality_adapter import classification_config
+        configured={}
+        for model in ('rev_ct','ct_clip_classfine'):
+            try:
+                classification_config(settings,model)
+                configured[model]=True
+            except ValueError:configured[model]=False
         return {'structures_default':'all','structures':list(TOTAL_LABELS.values()),'region_count':len(TOTAL_LABELS),
-                'qualities':['standard','fast'],'storage':'temporary','output':'ct-viewer-<result-id>.zip','retention':False}
+                'qualities':['standard','fast'],'storage':'temporary','output':'ct-viewer-<result-id>.zip','retention':False,
+                'abnormality_model_default':'rev_ct',
+                'abnormalities':list(ABNORMALITIES),
+                'abnormality_models':{'rev_ct':{'name':'RevCT','configured':configured['rev_ct']},
+                                      'ct_clip_classfine':{'name':'CT-CLIP (ClassFine)','configured':configured['ct_clip_classfine']},
+                                      'none':{'name':'Disabled','configured':True}},
+                'ct_clip_classfine':{'default':None,'configured':configured['ct_clip_classfine'],'scope':'non-contrast chest CT',
+                                    'abnormalities':list(ABNORMALITIES),
+                                    'threshold':settings.ct_clip_threshold if 0<settings.ct_clip_threshold<1 else None}}
 
     @app.get('/v1/upload/progress',include_in_schema=False)
     def current_upload_progress(actor=Depends(authenticate_local),key:str=Header(default='',alias='Idempotency-Key',include_in_schema=False)):
@@ -163,10 +181,17 @@ def create_app(settings,repository=None,store=None):
                    quality:Literal['standard','fast']=Form('standard'),
                    series_index:int|None=Form(-1,ge=-1,description='-1 یا خالی = انتخاب خودکار CT معتبر با بیشترین برش؛ 0 و بالاتر = شمارهٔ صریح سری.'),
                    wait_timeout:int=Form(3600,ge=1,le=86400,description='حداکثر انتظار برای ZIP، بر حسب ثانیه. پس از پایان مهلت، فایل‌های موقت پاک می‌شوند.'),
+                   abnormality_model:Literal['rev_ct','ct_clip_classfine','none']=Form('rev_ct',description='مدل یافته‌های قفسهٔ سینه؛ پیش‌فرض RevCT است. انتخاب صریح این فیلد بر گزینهٔ قدیمی ct_clip_classfine اولویت دارد. امتیازها و پرچم‌ها در HTML و data/abnormalities.json نمایش داده می‌شوند. none = فقط ناحیه‌بندی.'),
+                   ct_clip_classfine:bool|None=Form(None,description='گزینهٔ سازگاری قبلی؛ فقط وقتی abnormality_model ارسال نشده باشد اعمال می‌شود: true برای ClassFine و false برای غیرفعال‌سازی طبقه‌بندی.'),
                    actor=Depends(authenticate_local),key:str=Depends(local_request_key)):
         if series_index==-1:series_index=None
+        # FastAPI has already parsed and cached this multipart form. Preserve
+        # whether the selector was explicitly supplied, separately from its
+        # documented default, so legacy-only requests retain their behavior.
+        explicit_model=abnormality_model if (await request.form()).get('abnormality_model') else None
         result=await run_in_threadpool(local_jobs.submit,file.file,actor,key,
-            [x.strip() for x in structures.split(',') if x.strip()],quality,False,series_index is None,series_index,True,wait_timeout)
+            [x.strip() for x in structures.split(',') if x.strip()],quality,False,series_index is None,series_index,True,wait_timeout,
+            ct_clip_classfine=ct_clip_classfine,abnormality_model=explicit_model)
         id=result['job_id'];deadline=time.monotonic()+wait_timeout
         headers={'X-Job-Id':id,'Idempotency-Key':key,'Cache-Control':'no-store','X-Content-Type-Options':'nosniff'}
         try:

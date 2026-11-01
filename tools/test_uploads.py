@@ -2,6 +2,7 @@
 from contextlib import contextmanager
 from dataclasses import replace
 import io
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -27,6 +28,8 @@ from app.worker.local_worker import process
 from app.main import create_app
 from app.contracts import ActorContext
 from app.export.preview import generate_preview
+from app.inference.ct_clip_adapter import ABNORMALITIES,classification_result
+from app.inference.rev_ct_adapter import classification_result as rev_ct_result
 
 
 def synthetic_dicom_zip(slices=3):
@@ -75,16 +78,17 @@ class UploadTests(unittest.TestCase):
         self.assertEqual(self.store.mock_calls,[],'Local uploads must never use MinIO')
 
     def upload(self,data=None,headers=None,path='/v1/upload/',**options):
+        # Legacy segmentation checks explicitly disable the default classifier.
         return self.client.post(path,headers=self.headers if headers is None else headers,
-            data={'wait_timeout':'10',**options},files={'file':('scan.zip',self.payload if data is None else data,'application/zip')})
+            data={'wait_timeout':'10','ct_clip_classfine':'false',**options},files={'file':('scan.zip',self.payload if data is None else data,'application/zip')})
 
     def assert_clean(self):
         self.assertEqual(list(self.jobs.root.glob('*/')),[],'Inputs, masks and HTML must all be deleted')
 
     @contextmanager
-    def local_worker(self,model_delay=.12,model_error=None):
+    def local_worker(self,model_delay=.12,model_error=None,classification_error=None,classification_delay=0):
         stopped=threading.Event();errors=[]
-        self.started=threading.Event();self.produced={};self.model_calls=0
+        self.started=threading.Event();self.produced={};self.model_calls=0;self.classification_calls=[]
         def inference(volume,config,workdir,**kwargs):
             self.model_calls+=1;self.assertTrue(kwargs['lease_guard']());self.started.set()
             time.sleep(model_delay)
@@ -98,6 +102,17 @@ class UploadTests(unittest.TestCase):
             self.produced[id]={'zip':(directory/result['viewer']).read_bytes(),
                 'files':sorted(p.name for p in directory.iterdir())}
             return result
+        def classify(native_path,config,workdir,**kwargs):
+            self.assertTrue(kwargs['lease_guard']())
+            self.assertIsNotNone(kwargs['gpu_lock_fd'])
+            self.classification_calls.append(nib.load(native_path).get_fdata())
+            time.sleep(classification_delay)
+            if classification_error:raise ValueError(classification_error)
+            if config['backend']=='rev_ct':
+                return rev_ct_result({'labels':list(ABNORMALITIES),'scores':[.2,.8]+[.1]*16,
+                    'raw_scores':[.6,.45]+[.2]*16,'decision_logits':[.7,-.3]+[-1]*16,
+                    'decisions':[True,False]+[False]*16},config)
+            return classification_result([.8,.6]+[.2]*16,config)
         def run():
             try:
                 while not stopped.is_set():
@@ -107,7 +122,7 @@ class UploadTests(unittest.TestCase):
                         if state:process(self.jobs,state)
                     stopped.wait(.01)
             except Exception as exc:errors.append(exc)
-        with patch('app.worker.local_worker.run_segmentation',side_effect=inference),patch('app.worker.local_worker.generate_preview',side_effect=preview),patch('app.worker.local_worker.create_portable_package') as archive,patch('app.worker.local_worker.export_labelmap_seg') as dicom:
+        with patch('app.worker.local_worker.run_classification',side_effect=classify),patch('app.worker.local_worker.run_segmentation',side_effect=inference),patch('app.worker.local_worker.generate_preview',side_effect=preview),patch('app.worker.local_worker.create_portable_package') as archive,patch('app.worker.local_worker.export_labelmap_seg') as dicom:
             worker=threading.Thread(target=run,daemon=True);worker.start()
             try:yield
             finally:
@@ -135,10 +150,159 @@ class UploadTests(unittest.TestCase):
             self.assertNotIn('viewer/viewer.html',archive.namelist())
             self.assertIn('--color-primary: #0065f8',archive.read('viewer/assets/viewer.css').decode())
             self.assertNotIn('example-test-token',str(data))
+            self.assertNotIn('abnormality_classification',data)
+            self.assertNotIn('viewer/data/abnormalities.json',archive.namelist())
+        self.assertEqual(self.classification_calls,[])
         self.assert_clean()
         self.assertEqual(self.client.get('/v1/uploads',headers=self.headers).json(),{'items':[],'retention':False})
         self.assertEqual(self.client.get('/v1/uploads/'+id,headers=self.headers).status_code,404)
         self.assertEqual(self.client.get('/v1/uploads/'+id+'/result',headers=self.headers).status_code,404)
+
+    def enable_ct_clip(self):
+        checkpoint=Path(self.directory.name)/'CT_LiPro_v2.pt'
+        checkpoint.write_bytes(b'test checkpoint; inference is mocked')
+        self.settings=replace(self.settings,ct_clip_checkpoint=checkpoint,
+                              ct_clip_checkpoint_digest=hashlib.sha256(checkpoint.read_bytes()).hexdigest(),
+                              ct_clip_threshold=.6)
+        self.jobs.settings=self.settings
+        self.client=TestClient(create_app(self.settings,self.repository,self.store))
+        self.addCleanup(self.client.close)
+
+    def enable_rev_ct(self):
+        cache=Path(self.directory.name)/'rev-ct';cache.mkdir(exist_ok=True)
+        for name in ('model.safetensors','config.json','processor_config.json','checkpoint-manifest.json'):
+            (cache/name).write_bytes(b'fixture; inference is mocked')
+        self.settings=replace(self.settings,rev_ct_model_cache=cache,rev_ct_manifest_digest='a'*64)
+        self.jobs.settings=self.settings
+        self.client=TestClient(create_app(self.settings,self.repository,self.store))
+        self.addCleanup(self.client.close)
+
+    def test_ct_clip_opt_in_preserves_segmentation_and_packages_all_flags(self):
+        self.enable_ct_clip()
+        for endpoint in ('/v1/upload/','/v1/uploads'):
+            with self.local_worker():response=self.upload(ct_clip_classfine='true',path=endpoint,structures='liver',quality='fast')
+            self.assertEqual(response.status_code,200,response.text)
+            self.assertEqual(self.model_calls,1)
+            self.assertEqual(len(self.classification_calls),1)
+            np.testing.assert_array_equal(self.classification_calls[0][0,0,:],[40,41,42])
+            with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
+                manifest=json.loads(archive.read('viewer/data/manifest.json'))
+                findings=json.loads(archive.read('viewer/data/abnormalities.json'))
+                self.assertEqual(manifest['abnormality_classification'],findings)
+                self.assertEqual(manifest['labels'],{'5':'liver'})
+                self.assertEqual([row['name'] for row in findings['abnormalities']],list(ABNORMALITIES))
+                self.assertEqual([row['flagged'] for row in findings['abnormalities']],[True,True]+[False]*16)
+                self.assertEqual(findings['threshold'],.6)
+                self.assertEqual(findings['source_identity'],manifest['source_identity'])
+                self.assertEqual(findings['selected_series_index'],0)
+                self.assertIn('viewer/data/abnormalities.json.js',archive.namelist())
+                self.assertEqual(findings['model'],'CT-CLIP (ClassFine)')
+                self.assertIn('id="abnormalitiesTitle"',archive.read('viewer/index.html').decode())
+            self.assert_clean()
+
+    def test_rev_ct_runs_by_default_on_both_upload_routes(self):
+        self.enable_rev_ct()
+        for endpoint in ('/v1/upload/','/v1/uploads'):
+            with self.local_worker():
+                response=self.client.post(endpoint,headers=self.headers,data={'wait_timeout':'10'},
+                    files={'file':('scan.zip',self.payload,'application/zip')})
+            self.assertEqual(response.status_code,200,response.text)
+            self.assertEqual(self.model_calls,1)
+            self.assertEqual(len(self.classification_calls),1)
+            with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
+                findings=json.loads(archive.read('viewer/data/abnormalities.json'))
+                self.assertEqual(len(findings['abnormalities']),18)
+                self.assertEqual(findings['model'],'RevCT')
+                self.assertIsNone(findings['threshold'])
+                self.assertTrue(findings['abnormalities'][0]['flagged'])
+                self.assertLess(findings['abnormalities'][0]['score'],.5)
+                self.assertFalse(findings['abnormalities'][1]['flagged'])
+                self.assertGreater(findings['abnormalities'][1]['score'],.5)
+                html=archive.read('viewer/index.html').decode()
+                self.assertIn('id="modeAbnormalities" data-view="abnormalities"',html)
+                self.assertIn('aria-controls="abnormalitiesPanel"',html)
+                self.assertLess(html.index('id="viewColumn"'),html.index('id="abnormalitiesPanel"'))
+                self.assertLess(html.index('id="abnormalitiesPanel"'),html.index('id="nativeView"'))
+            self.assert_clean()
+
+    def test_ct_clip_requires_configuration_only_when_requested(self):
+        self.assertEqual(self.upload(ct_clip_classfine='true').status_code,503)
+        response=self.client.post('/v1/upload/',headers=self.headers,files={'file':('scan.zip',self.payload)})
+        self.assertEqual(response.status_code,503)
+        self.assertEqual(response.json()['detail'],'REV_CT_CHECKPOINT_UNAVAILABLE')
+        with self.local_worker():response=self.upload(ct_clip_classfine='false')
+        self.assertEqual(response.status_code,200)
+        self.assertEqual(self.classification_calls,[])
+        self.assert_clean()
+
+    def test_explicit_model_selection_and_disabling(self):
+        self.enable_rev_ct();self.enable_ct_clip()
+        for model,expected in [('none',None),('rev_ct','RevCT'),('ct_clip_classfine','CT-CLIP (ClassFine)')]:
+            with self.local_worker():
+                response=self.client.post('/v1/upload/',headers=self.headers,
+                    data={'wait_timeout':'10','abnormality_model':model},
+                    files={'file':('scan.zip',self.payload,'application/zip')})
+            self.assertEqual(response.status_code,200,response.text)
+            with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
+                manifest=json.loads(archive.read('viewer/data/manifest.json'))
+                self.assertEqual(manifest.get('abnormality_classification',{}).get('model'),expected)
+            self.assert_clean()
+        response=self.client.post('/v1/upload/',headers=self.headers,data={'abnormality_model':'unknown'},
+            files={'file':('scan.zip',self.payload,'application/zip')})
+        self.assertEqual(response.status_code,422)
+        actor=ActorContext(self.settings.tenant_id,'tester',True)
+        state=self.jobs.submit(io.BytesIO(self.payload),actor,'different-backend',['all'],'standard',abnormality_model='rev_ct')
+        with self.assertRaisesRegex(ValueError,'IDEMPOTENCY_CONFLICT'):
+            self.jobs.submit(io.BytesIO(self.payload),actor,'different-backend',['all'],'standard',abnormality_model='ct_clip_classfine')
+        self.jobs.discard(state['job_id'],actor)
+        self.assert_clean()
+        self.assertEqual(self.upload(ct_clip_classfine='invalid').status_code,422)
+        self.assert_clean()
+
+    def test_explicit_selector_wins_over_legacy_checkbox_on_both_routes(self):
+        # ClassFine is deliberately unconfigured. A stale true checkbox must
+        # never redirect an explicit RevCT request to its missing checkpoint.
+        self.enable_rev_ct()
+        for endpoint in ('/v1/upload/','/v1/uploads'):
+            for legacy in ('true','false'):
+                with self.local_worker():
+                    response=self.client.post(endpoint,headers=self.headers,
+                        data={'wait_timeout':'10','abnormality_model':'rev_ct','ct_clip_classfine':legacy},
+                        files={'file':('scan.zip',self.payload,'application/zip')})
+                self.assertEqual(response.status_code,200,response.text)
+                with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
+                    findings=json.loads(archive.read('viewer/data/abnormalities.json'))
+                    self.assertEqual(findings['model'],'RevCT')
+                self.assertEqual(len(self.classification_calls),1)
+                self.assert_clean()
+        with self.local_worker():
+            response=self.client.post('/v1/upload/',headers=self.headers,
+                data={'wait_timeout':'10','abnormality_model':'none','ct_clip_classfine':'true'},
+                files={'file':('scan.zip',self.payload,'application/zip')})
+        self.assertEqual(response.status_code,200,response.text)
+        self.assertEqual(self.classification_calls,[])
+        self.assert_clean()
+
+    def test_ct_clip_failure_and_timeout_are_cleaned(self):
+        self.enable_ct_clip()
+        with self.local_worker(classification_error='CT_CLIP_MODEL_UNAVAILABLE'):
+            response=self.upload(ct_clip_classfine='true')
+        self.assertEqual(response.status_code,422)
+        self.assertEqual(response.json()['detail'],'CT_CLIP_MODEL_UNAVAILABLE')
+        self.assert_clean()
+        with self.local_worker(classification_delay=1.2):
+            response=self.upload(ct_clip_classfine='true',wait_timeout='1')
+        self.assertEqual(response.status_code,504)
+        self.assert_clean()
+
+    def test_ct_clip_option_participates_in_idempotency(self):
+        self.enable_ct_clip()
+        actor=ActorContext(self.settings.tenant_id,'tester',True)
+        first=self.jobs.submit(io.BytesIO(self.payload),actor,'test-clip',['all'],'standard',ct_clip_classfine=False)
+        with self.assertRaisesRegex(ValueError,'IDEMPOTENCY_CONFLICT'):
+            self.jobs.submit(io.BytesIO(self.payload),actor,'test-clip',['all'],'standard',ct_clip_classfine=True)
+        self.jobs.discard(first['job_id'],actor)
+        self.assert_clean()
 
     def test_token_only_and_plural_alias_return_zip_without_a_cache(self):
         headers={'Authorization':self.headers['Authorization']}
@@ -202,7 +366,7 @@ class UploadTests(unittest.TestCase):
         with zipfile.ZipFile(archive,'w'):pass
         self.assertEqual(self.upload(archive.getvalue()).json(),{'detail':'EMPTY_ZIP'})
         with TestClient(create_app(replace(self.settings,max_archive=10),self.repository,self.store)) as client:
-            response=client.post('/v1/upload/',headers=self.headers,files={'file':('scan.zip',self.payload)})
+            response=client.post('/v1/upload/',headers=self.headers,data={'ct_clip_classfine':'false'},files={'file':('scan.zip',self.payload)})
         self.assertEqual(response.status_code,413)
         with self.local_worker():response=self.upload(synthetic_dicom_zip(1))
         self.assertEqual(response.status_code,422)
@@ -272,7 +436,7 @@ class UploadTests(unittest.TestCase):
 
     def test_active_duplicate_is_rejected_and_reaper_removes_expired_or_orphaned_work(self):
         actor=ActorContext(self.settings.tenant_id,'tester',True)
-        first=self.jobs.submit(io.BytesIO(self.payload),actor,'upload-test-1',['all'],'standard',False,True,None,True,3600)
+        first=self.jobs.submit(io.BytesIO(self.payload),actor,'upload-test-1',['all'],'standard',False,True,None,True,3600,ct_clip_classfine=False)
         directory=self.jobs.directory(first['job_id'])
         duplicate=self.upload()
         self.assertEqual(duplicate.status_code,409)
@@ -280,7 +444,7 @@ class UploadTests(unittest.TestCase):
         self.assertEqual((directory/'input.zip').read_bytes(),self.payload)
         state=self.jobs.load(first['job_id']);self.jobs.save(state,expires_at=0)
         self.jobs.reap_ephemeral();self.assert_clean()
-        self.jobs.submit(io.BytesIO(self.payload),actor,'orphan',['all'],'standard',False,True,None,True,3600)
+        self.jobs.submit(io.BytesIO(self.payload),actor,'orphan',['all'],'standard',False,True,None,True,3600,ct_clip_classfine=False)
         for name in ('.incoming-interrupted','e'*32):
             path=self.jobs.root/name;path.mkdir();(path/'input.zip').write_bytes(b'interrupted')
         with TestClient(create_app(self.settings,self.repository,self.store)):self.assert_clean()
@@ -301,9 +465,17 @@ class UploadTests(unittest.TestCase):
         properties=schema['components']['schemas'][form]['properties']
         self.assertNotIn('reuse_segmentation',properties)
         self.assertEqual(properties['series_index']['default'],-1)
+        self.assertEqual(properties['abnormality_model']['default'],'rev_ct')
+        self.assertEqual(properties['abnormality_model']['enum'],['rev_ct','ct_clip_classfine','none'])
+        self.assertIsNone(properties['ct_clip_classfine'].get('default'))
+        self.assertIn({'type':'boolean'},properties['ct_clip_classfine']['anyOf'])
         capabilities=self.client.get('/v1/uploads/capabilities',headers=self.headers).json()
         self.assertFalse(capabilities['retention'])
         self.assertEqual(capabilities['output'],'ct-viewer-<result-id>.zip')
+        self.assertFalse(capabilities['ct_clip_classfine']['configured'])
+        self.assertIsNone(capabilities['ct_clip_classfine']['default'])
+        self.assertEqual(capabilities['abnormality_model_default'],'rev_ct')
+        self.assertEqual(len(capabilities['ct_clip_classfine']['abnormalities']),18)
 
     def test_model_child_temporary_files_stay_inside_request_cleanup_boundary(self):
         from app.inference.totalseg_adapter import run_segmentation

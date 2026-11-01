@@ -9,7 +9,7 @@ function measurementData(){if(!measurementsLoading)measurementsLoading=ViewerLoa
 const ui={ready:false,version:'edited',focus:Number(data.present[0]||Object.keys(data.labels)[0]),revision:0,processing:pre?'server-precomputed':'unavailable',localProcessor:false,
     reviews:{},measurements:{original:{},edited:{}},world:null,planes:[],mpr:false,busy:false,loadCancelled:false,view:'native',inspector:'measurements'};
 let worker=null,engineLoading=null,nextId=0,pending=new Map(),loadSession=0,measurementRequest=0,nativeRequest=0,viewRequest=0,viewTimer=null;
-let stroke=null,originalSlice=null,resolveReady,surface=null,selectionSignature='',selectionIdsSignature='',surfaceSelectionTimer=null;
+let stroke=null,originalSlice=null,resolveReady,surface=null,abnormalities=null,selectionSignature='',selectionIdsSignature='',surfaceSelectionTimer=null;
 const ready=new Promise(resolve=>resolveReady=resolve);
 const markers=document.createElement('canvas');markers.id='markers';world.append(markers);const markerCtx=markers.getContext('2d');
 const affine=data.geometry?.affine_ras_mm;
@@ -272,10 +272,19 @@ function fitNativeWorld(){
     const fittedWidth=Math.min(width,height*aspect);world.style.width=fittedWidth+'px';world.style.height=(fittedWidth/aspect)+'px';
 }
 async function showView(mode,initialize=false){
-    if(initialize&&mode!=='native'&&!ui.ready)return;ui.view=mode;if(mode!=='native'){el('editingEnabled').checked=false;updateVersion();}
+    if(initialize&&!['native','abnormalities'].includes(mode)&&!ui.ready)return;
+    ui.view=mode;if(mode!=='native'){stopPlay();el('editingEnabled').checked=false;updateVersion();}
     el('nativeView').hidden=mode!=='native';el('mprMount').hidden=mode!=='mpr';el('surfaceMount').hidden=mode!=='surface';
+    el('abnormalitiesPanel').hidden=mode!=='abnormalities';
+    document.querySelector('.selection-strip').hidden=mode==='abnormalities';
+    if(mode!=='abnormalities')abnormalities?.hide();
     for(const button of document.querySelectorAll('[data-view]')){const active=button.dataset.view===mode;button.classList.toggle('active',active);button.setAttribute('aria-pressed',String(active));}
     if(mode==='mpr'){el('mprPanel').open=true;if(initialize)el('startMpr').click();}
+    if(mode==='abnormalities'&&initialize&&data.abnormality_classification){try{
+        await ViewerLoader.script('assets/abnormality-viewer.js');
+        if(!abnormalities){abnormalities=new OfflineAbnormalities({data,el,isActive:()=>ui.view==='abnormalities'});window.ViewerExtension.abnormalities=abnormalities;}
+        if(ui.view==='abnormalities')await abnormalities.show();
+    }catch(error){el('heatmapUnavailable').hidden=false;el('heatmapUnavailable').textContent='نمایش نقشه ممکن نیست: '+error.message;}}
     if(mode==='surface'){el('surfacePanel').open=true;if(initialize){try{await metadata();await ViewerLoader.script('assets/surface-viewer.js');if(!surface){surface=new OfflineSurface({el,rpc,notify,ui,data,focus,navigateWorld,showError,getSelected:()=>[...selected],beforeShow:()=>showView('surface'),getRow:n=>ui.measurements[ui.version][n]||pre.surfaces.structures[n]});window.ViewerExtension.surface=surface;}if(ui.view==='surface')await surface.setSelection([ui.focus]);}catch(error){showError(error,'surfaceStatus');}}}
     requestAnimationFrame(()=>{fitNativeWorld();drawPlanes();surface?.draw();});
 }

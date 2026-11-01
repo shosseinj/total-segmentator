@@ -14,3 +14,21 @@ body{margin:0;background:var(--color-base-50);color:var(--ui-ink);font:13px Taho
 @media(min-width:1700px){.mpr-grid{grid-template-rows:minmax(0,1fr)}}
 
 @media(max-width:980px){.region{min-height:42px}.region .go{font-size:11px;padding:4px 8px}.view-tabs button{min-height:34px}}
+
+.abnormalities-panel{flex:1;min-height:0;margin:0 12px 12px;padding:16px;border:1px solid var(--color-primary-200);border-radius:9px;background:var(--ui-soft);overflow:auto;scrollbar-width:thin}
+.abnormalities-panel h2{font-size:16px}.abnormalities-panel p{margin:8px 0;font-size:11px}
+#abnormalitiesList{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px 12px;margin:16px 0}
+#abnormalitiesList .abnormality-row{margin:0;padding:10px;border:1px solid var(--ui-border);background:var(--color-base-25);border-radius:7px;overflow-wrap:anywhere}
+#abnormalitiesList .flagged{font-weight:bold;color:var(--color-warning-900);background:var(--color-warning-50)}
+#downloadAbnormalities{font-size:11px;padding:7px 10px}
+.view-tabs button{white-space:nowrap}
+@media(max-width:600px){#abnormalitiesList{grid-template-columns:minmax(0,1fr)}.abnormalities-panel{margin:0 8px 8px;padding:12px}.view-topbar .review-badge{display:none}.view-tabs{width:100%;min-width:0}.view-tabs button{flex:1;padding:6px 5px;font-size:10px}}
+.heatmap-note{padding:8px 10px;background:var(--color-base-25);border-radius:7px;border:1px solid var(--ui-border)}
+.heatmap-controls{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px 12px;margin:12px 0;align-items:center}
+.heatmap-controls label{display:flex;flex-wrap:wrap;gap:5px;align-items:center;font-size:11px;min-width:0}.heatmap-controls select{max-width:100%;font-size:11px}.heatmap-finding{grid-column:span 2}.heatmap-finding select{width:100%}
+.heatmap-stage{position:relative;height:clamp(220px,42dvh,440px);background:#080c12;border-radius:9px;overflow:hidden}
+.heatmap-stage canvas{position:absolute;inset:0;width:100%;height:100%;object-fit:contain}.heatmap-stage canvas:last-child{pointer-events:none}
+.heatmap-navigation{display:flex;justify-content:space-between;align-items:center;gap:8px;margin:9px 0;font-size:11px}.heatmap-navigation button{font-size:11px}
+.heatmap-legend{display:flex;align-items:center;gap:8px}.heatmap-legend i{width:64px;height:10px;display:inline-block;background:linear-gradient(to right,#ffe000,#ff0000);border-radius:4px;flex:none}
+#abnormalitiesScores{margin:16px 0;font-size:12px}#abnormalitiesScores summary{padding:5px 0}
+@media(max-width:600px){.heatmap-controls{grid-template-columns:repeat(2,minmax(0,1fr))}.heatmap-finding{grid-column:span 2}.heatmap-stage{height:300px}.heatmap-navigation{font-size:10px}}

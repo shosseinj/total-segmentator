@@ -61,7 +61,7 @@ class LocalJobs:
 
     def public(self,state):
         id=state['job_id']
-        fields=('job_id','status','stage','created_at','updated_at','stage_started_at','timings','safe_error','series','selected_series_index','series_selection_policy','warnings','quality','structures','benchmark','reuse_segmentation')
+        fields=('job_id','status','stage','created_at','updated_at','stage_started_at','timings','safe_error','series','selected_series_index','series_selection_policy','warnings','quality','structures','benchmark','reuse_segmentation','ct_clip_classfine','abnormality_model')
         if state.get('ephemeral'):return {k:state[k] for k in fields if k in state}
         return {**{k:state[k] for k in fields if k in state},
                 'status_url':f'/v1/uploads/{id}','result_url':f'/v1/uploads/{id}/result',
@@ -75,12 +75,16 @@ class LocalJobs:
             if state['tenant_id']==actor.tenant_id:rows.append(self.public(state))
         return sorted(rows,key=lambda s:s['created_at'],reverse=True)
 
-    def submit(self,stream,actor,key,structures,quality,reuse_segmentation=True,auto_select_series=False,series_index=None,ephemeral=False,wait_timeout=3600):
+    def submit(self,stream,actor,key,structures,quality,reuse_segmentation=True,auto_select_series=False,series_index=None,ephemeral=False,wait_timeout=3600,ct_clip_classfine=None,abnormality_model=None):
         if not actor.operator:raise ValueError('ACCESS_DENIED')
         if not key or len(key)>128:raise ValueError('IDEMPOTENCY_KEY_REQUIRED')
         structures=normalize_structures(structures)
         if quality not in ('standard','fast'):
             raise ValueError('INVALID_CONFIG')
+        from app.inference.abnormality_adapter import select_model,classification_config
+        abnormality_model=select_model(abnormality_model,ct_clip_classfine)
+        classification_config(self.settings,abnormality_model)
+        ct_clip_classfine=abnormality_model=='ct_clip_classfine'
         if ephemeral:reuse_segmentation=False
         self.root.mkdir(parents=True,exist_ok=True,mode=0o700)
         with tempfile.TemporaryDirectory(prefix='.incoming-',dir=self.root) as tmp:
@@ -92,6 +96,8 @@ class LocalJobs:
                     sha.update(block);target.write(block)
             validate_zip(path,self.settings)
             request={'sha256':sha.hexdigest(),'structures':structures,'quality':quality}
+            if ct_clip_classfine:request['ct_clip_classfine']=True
+            if abnormality_model=='rev_ct':request['abnormality_model']=abnormality_model
             if not reuse_segmentation:request['reuse_segmentation']=False
             if series_index is not None:request['series_index']=series_index
             elif auto_select_series:request['auto_select_series']=True
@@ -107,7 +113,8 @@ class LocalJobs:
                 state={'job_id':id,'tenant_id':actor.tenant_id,'actor_id':actor.actor_id,
                        'request_digest':digest,'input_sha256':sha.hexdigest(),'input_bytes':size,
                        'created_at':time.time(),'structures':structures,'quality':quality,'reuse_segmentation':reuse_segmentation,
-                       'auto_select_series':auto_select_series,'requested_series_index':series_index}
+                       'auto_select_series':auto_select_series,'requested_series_index':series_index,
+                       'ct_clip_classfine':ct_clip_classfine,'abnormality_model':abnormality_model}
                 if ephemeral:state.update(ephemeral=True,viewer_only=True,expires_at=time.time()+wait_timeout)
                 self.save(state,status='queued',stage='queued',safe_error=None)
                 return self.public(state)

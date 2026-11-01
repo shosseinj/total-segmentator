@@ -1,0 +1,3 @@
+# Install in a separate runtime to preserve TotalSegmentator's dependencies.
+# Includes the author's pinned Transformers, COLIPRI and preprocessing versions.
+rev-ct[inference] @ git+https://github.com/hcltech-robotics/rev-ct.git@116686e77ea857dfc4d93fe366e7da04b4214b92

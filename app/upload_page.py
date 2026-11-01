@@ -4,6 +4,7 @@ from app.export.theme import browser_theme
 
 STAGES={'receiving':'دریافت فایل ZIP','queued':'در صف پردازش','validating':'بررسی فایل‌های دایکام','awaiting_selection':'سری سی‌تی موردنظر را انتخاب کنید',
         'waiting_gpu':'در انتظار آزادشدن کارت گرافیک','running':'ناحیه‌بندی با کارت گرافیک در حال انجام است',
+        'classifying_abnormalities':'طبقه‌بندی یافته‌های قفسهٔ سینه با مدل انتخاب‌شده',
         'exporting':'ساخت فایل‌های نتیجه','resampling':'تطبیق ماسک با شبکهٔ اصلی تصویر','measurements':'محاسبهٔ اندازه‌گیری‌ها',
         'dicom_export':'ساخت خروجی DICOM','reusing_segmentation':'استفاده از ناحیه‌بندی معتبر قبلی',
         'creating_preview':'آماده‌سازی نمایشگر','creating_archive':'ساخت بستهٔ مستقل نتیجه','succeeded':'نتیجه آماده است','failed':'پردازش انجام نشد'}

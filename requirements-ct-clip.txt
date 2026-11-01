@@ -1,0 +1,5 @@
+# Optional additions to requirements.lock + requirements-inference.txt.
+# Official CTViT implementation; ClassFine does not need the CT_CLIP text stack.
+transformer-maskgit @ git+https://github.com/ibrahimethemhamamci/CT-CLIP.git@a2a155c601987820433c01db69b64d701d3d229d#subdirectory=transformer_maskgit
+transformers==4.46.3
+torchvision==0.23.0

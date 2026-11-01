@@ -74,6 +74,11 @@ def generate_preview(native_path,masks_path,directory,labels,standalone_only=Fal
         source_identity={'result_id':directory.parent.name, **context.get('source_identity',{})},
         authenticated_user=context.get('authenticated_user'),
         original_fingerprint=original_fingerprint(image,segmentation,geometry))
+    if context.get('abnormality_classification'):
+        payload['abnormality_classification']=context['abnormality_classification']
+    if context.get('abnormality_heatmaps_path'):
+        from app.export.abnormalities import heatmap_payload
+        payload['abnormality_heatmaps']=heatmap_payload(context['abnormality_heatmaps_path'],native_path)
     payload['precomputed']=precompute_viewer(image,segmentation,geometry,labels,hu_offset,hu_step)
     package=build_viewer_package(payload,directory)
     if standalone_only:return {'viewer':package.name}

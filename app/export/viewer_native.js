@@ -1,5 +1,27 @@
 "use strict";const data=window.ViewerData;const byId=id=>document.getElementById(id);let index=data.start;const selected=new Set(data.present);let labelPixels=null;const rows=[];const canvas=byId('mask'),ctx=canvas.getContext('2d');
 const ct=byId('ct'),ctCtx=ct.getContext('2d'),ruler=byId('ruler'),rulerCtx=ruler.getContext('2d'),world=byId('world'),stage=byId('stage');byId('identity').textContent='شناسهٔ نتیجه: '+data.job_id;byId('scope').textContent=new Intl.NumberFormat('fa-IR').format(data.available_class_count)+' کلاس موجود در مدل · پردازش '+new Intl.NumberFormat('fa-IR').format(Object.keys(data.labels).length)+' ناحیه · '+new Intl.NumberFormat('fa-IR').format(data.present.length)+' ماسک غیرخالی';byId('subsetWarning').hidden=Object.keys(data.labels).length!==1;if(byId('archiveLink'))byId('archiveLink').hidden=!data.has_archive||location.protocol==='file:';if(byId('ctLink'))byId('ctLink').hidden=!data.has_ct;byId('themePicker').onchange=e=>{document.documentElement.dataset.appKey=e.target.value;};const fa=new Intl.NumberFormat('fa-IR',{maximumFractionDigits:2});let rawPixels=null,zoom=1,panX=0,panY=0,tool='pan',drag=null,rulerPoints=[],timer=null,loading=false;
+if(data.abnormality_classification){
+    const result=data.abnormality_classification;
+    byId('abnormalitiesEmpty').hidden=true;
+    byId('abnormalitiesResults').hidden=false;
+    byId('abnormalitiesTitle').textContent='ناهنجاری‌ها · '+result.model;
+    byId('abnormalitiesDescription').textContent=result.model==='RevCT'
+        ?'یافته‌های خودکار قفسهٔ سینه با RevCT؛ نیازمند بازبینی. پرچم‌ها از آستانه‌های آموزش‌دیدهٔ هر یافته به‌دست می‌آیند، نه برش ۰٫۵ روی امتیاز کالیبره‌شده. بدون پرچم به معنی رد بیماری نیست.'
+        :'امتیازهای خودکار برای سی‌تی بدون کنتراست قفسهٔ سینه؛ نیازمند بازبینی. امتیازها احتمال کالیبره‌شده نیستند. زیر آستانه به معنی رد بیماری نیست.';
+    byId('downloadAbnormalities').onclick=()=>{
+        const url=URL.createObjectURL(new Blob([JSON.stringify(result,null,2)],{type:'application/json'}));
+        const link=document.createElement('a');link.href=url;link.download='abnormalities.json';
+        document.body.append(link);link.click();link.remove();setTimeout(()=>URL.revokeObjectURL(url),1000);
+    };
+    byId('abnormalitiesSummary').textContent=fa.format(result.abnormalities.filter(row=>row.flagged).length)+' یافتهٔ پرچم‌دار · '+(result.threshold==null?'آستانه‌های آموزش‌دیدهٔ مدل':'آستانهٔ امتیاز '+fa.format(result.threshold));
+    for(const finding of result.abnormalities){
+        const row=document.createElement('p'),name=document.createElement('bdi');
+        name.dir='ltr';name.textContent=finding.name;row.className='small abnormality-row';
+        row.classList.toggle('flagged',finding.flagged);
+        row.append(name,document.createTextNode(' · '+fa.format(finding.score)+' · '+(finding.flagged?'پرچم‌دار':result.threshold==null?'بدون پرچم':'زیر آستانه')));
+        byId('abnormalitiesList').append(row);
+    }
+}
 function count(){byId('regionCount').textContent=`${fa.format(selected.size)} انتخاب · ${fa.format(data.present.length)} ماسک غیرخالی`;const list=byId('measurements');list.replaceChildren();for(const n of selected){const row=document.createElement('div'),name=document.createElement('span'),value=document.createElement('span');name.textContent=data.labels_fa[n];value.textContent=(window.ViewerExtension?window.ViewerExtension.value(n):data.volumes_ml[n])==null?'ناموجود':fa.format(window.ViewerExtension?window.ViewerExtension.value(n):data.volumes_ml[n])+' میلی‌لیتر';row.append(name,value);list.append(row);}}
 function overlay(){if(!labelPixels)return;const out=ctx.createImageData(canvas.width,canvas.height),w=canvas.width,h=canvas.height,border=byId('contour').checked;for(let i=0;i<labelPixels.length;i+=4){const n=labelPixels[i],p=i/4,x=p%w,y=Math.floor(p/w);if(selected.has(n)&&(!border||x===0||x===w-1||y===0||y===h-1||labelPixels[i-4]!==n||labelPixels[i+4]!==n||labelPixels[i-4*w]!==n||labelPixels[i+4*w]!==n)){const c=data.colors[n];out.data[i]=c[0];out.data[i+1]=c[1];out.data[i+2]=c[2];out.data[i+3]=255;}}ctx.putImageData(out,0,0);count();window.ViewerExtension?.afterOverlay();}
 function filter(){const query=byId('search').value.toLowerCase().replaceAll('ي','ی').replaceAll('ك','ک');for(const item of rows)item.row.hidden=!(item.name.includes(query)&&(item.present||byId('showEmpty').checked)&&(!byId('onlySelected').checked||item.check.checked));byId('noRegions').hidden=rows.some(item=>!item.row.hidden);}

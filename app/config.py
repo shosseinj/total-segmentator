@@ -30,6 +30,12 @@ class Settings:
     mr_enabled: bool = False
     max_artifact: int = 1024**3
     swagger_auto_authorize: bool = False
+    ct_clip_checkpoint: Path | None = None
+    ct_clip_checkpoint_digest: str = ''
+    ct_clip_threshold: float = 0.5
+    rev_ct_model_cache: Path = Path('models/rev-ct')
+    rev_ct_manifest_digest: str = ''
+    rev_ct_python: Path | None = None
 
     @classmethod
     def from_env(cls, env=None):
@@ -57,4 +63,10 @@ class Settings:
                    checkpoint_digest=env.get('SEG_CHECKPOINT_DIGEST',''),
                    model_cache=Path(env.get('SEG_MODEL_CACHE','work/models')),
                    mr_enabled=env.get('SEG_MR_ENABLED','false')=='true',
-                   swagger_auto_authorize=env.get('SEG_SWAGGER_AUTO_AUTHORIZE','false').lower()=='true')
+                   swagger_auto_authorize=env.get('SEG_SWAGGER_AUTO_AUTHORIZE','false').lower()=='true',
+                   ct_clip_checkpoint=Path(env['SEG_CT_CLIP_CHECKPOINT']) if env.get('SEG_CT_CLIP_CHECKPOINT') else None,
+                   ct_clip_checkpoint_digest=env.get('SEG_CT_CLIP_CHECKPOINT_DIGEST',''),
+                   ct_clip_threshold=float(env.get('SEG_CT_CLIP_THRESHOLD','0.5')),
+                   rev_ct_model_cache=Path(env.get('SEG_REV_CT_MODEL_CACHE','models/rev-ct')),
+                   rev_ct_manifest_digest=env.get('SEG_REV_CT_MANIFEST_DIGEST',''),
+                   rev_ct_python=Path(env['SEG_REV_CT_PYTHON']) if env.get('SEG_REV_CT_PYTHON') else None)

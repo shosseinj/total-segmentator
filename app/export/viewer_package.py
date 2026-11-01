@@ -44,7 +44,7 @@ def validate_package(root):
     """Every packaged data/script/style reference must exist before publication."""
     required = ['index.html', 'data/manifest.json', 'data/measurements.json', 'README.txt']
     required += ['assets/' + name for name in ('viewer.css', 'native-viewer.js', 'lazy-loader.js',
-                 'advanced-viewer.js', 'surface-viewer.js', 'mask-worker.js')]
+                 'advanced-viewer.js', 'surface-viewer.js', 'abnormality-viewer.js', 'mask-worker.js')]
     def references(value):
         if isinstance(value, dict):
             for item in value.values():
@@ -86,6 +86,8 @@ def build_viewer_package(payload, directory):
         (root/'assets').mkdir(parents=True)
         (root/'data').mkdir()
         manifest = copy.deepcopy(payload)
+        if manifest.get('abnormality_classification'):
+            write_json(root/'data/abnormalities.json',manifest['abnormality_classification'])
         def extract(encoded, name):
             path = root/name
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -95,6 +97,9 @@ def build_viewer_package(payload, directory):
         for field, folder in [('frames', 'ct'), ('overlays', 'masks')]:
             manifest[field] = [extract(value, f'data/{folder}/{i:04d}.png')
                                for i, value in enumerate(manifest[field])]
+        if manifest.get('abnormality_heatmaps'):
+            for i,heatmap in enumerate(manifest['abnormality_heatmaps']['maps']):
+                heatmap['url']=extract(heatmap.pop('png'),f'data/abnormalities/{i:02d}.png')
         pre = manifest.pop('precomputed')
         measurement_rows = pre.pop('measurements') if pre else {}
         write_json(root/'data/measurements.json', measurement_rows)
@@ -120,6 +125,7 @@ def build_viewer_package(payload, directory):
         for source, target in [('viewer_native.js','native-viewer.js'),
                                ('viewer_lazy_loader.js','lazy-loader.js'),
                                ('viewer_extension.js','advanced-viewer.js'),
+                               ('viewer_abnormalities.js','abnormality-viewer.js'),
                                ('viewer_surface.js','surface-viewer.js'),
                                ('viewer_worker.js','mask-worker.js')]:
             (root/'assets'/target).write_bytes((ASSETS/source).read_bytes())

@@ -44,7 +44,7 @@ TEST=r'''<script>(async()=>{const sleep=ms=>new Promise(r=>setTimeout(r,ms));try
 
 
 def main():
-    fixture=UploadTests();fixture.setUp()
+    fixture=UploadTests();fixture.setUp();fixture.enable_rev_ct()
     auto_authorize='--auto-authorize' in sys.argv
     if auto_authorize:
         fixture.client.close()

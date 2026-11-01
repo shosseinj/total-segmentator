@@ -15,6 +15,7 @@ from app.inventory.archive import extract_zip
 from app.inventory.dicom_series import inventory_paths
 from app.geometry.native_grid import build_native_volume,resample_masks_to_native
 from app.inference.totalseg_adapter import run_segmentation
+from app.inference.abnormality_adapter import classification_config,run_classification
 from app.inference.local_cache import cached_segmentation
 from app.export.dicom_seg import export_labelmap_seg
 from app.export.measurements import measure_labelmap
@@ -61,6 +62,8 @@ def process(jobs,state):
                 'model_release':settings.model_release,'pipeline_version':settings.pipeline_version,
                 'model_cache':str(settings.model_cache),'checkpoint_digest':settings.checkpoint_digest,
                 'timeout_seconds':settings.timeout_seconds,'multilabel_output':True}
+        classifier_config=classification_config(settings,state.get('abnormality_model',
+            'ct_clip_classfine' if state.get('ct_clip_classfine') else 'none'))
         volume=build_native_volume(series[index])
         cached=cached_segmentation(jobs,state,config,volume)
         if cached:
@@ -86,6 +89,19 @@ def process(jobs,state):
             mark('resampling','exporting')
             from nibabel.processing import resample_from_to
             native=resample_from_to(output,(volume.array.shape,volume.affine_ras),order=0)
+        classification=None
+        if classifier_config:
+            mark('waiting_gpu','waiting_gpu')
+            while True:
+                try:
+                    with gpu_slot(settings.scratch) as fd:
+                        mark('classifying_abnormalities','running')
+                        classification=run_classification(directory/'model/native.nii.gz',classifier_config,directory/'classifier',
+                            lease_guard=lambda:not state.get('ephemeral') or (not (directory/'.discard').exists() and time.time()<state['expires_at']),gpu_lock_fd=fd)
+                    break
+                except ValueError as exc:
+                    if str(exc)!='GPU_BUSY':raise
+                    mark('waiting_gpu','waiting_gpu');time.sleep(1)
         mark('measurements','exporting')
         labelmap=np.asanyarray(native.dataobj).astype(np.uint8)
         labels={number:name for number,name in TOTAL_LABELS.items() if name in state['structures']}
@@ -96,6 +112,12 @@ def process(jobs,state):
                 'series_instance_uid':str(volume.datasets[0].SeriesInstanceUID),
                 'frame_of_reference_uid':str(volume.datasets[0].FrameOfReferenceUID)},
             'authenticated_user':{'actor_id':state['actor_id']} if state.get('actor_id') else None}
+        if classification:
+            classification['source_identity']={'result_id':state['job_id'],**viewer_context['source_identity']}
+            classification['selected_series_index']=index
+            viewer_context['abnormality_classification']=classification
+            if classifier_config['backend']=='rev_ct' and (directory/'classifier/heatmaps.npz').is_file():
+                viewer_context['abnormality_heatmaps_path']=directory/'classifier/heatmaps.npz'
         if state.get('viewer_only') or state.get('html_only'):
             # The viewer ZIP needs a temporary native mask, but no DICOM SEG
             # or reusable inference result. Existing ephemeral cleanup is unchanged.
@@ -126,6 +148,10 @@ def process(jobs,state):
         result={**measurements,'model_release':settings.model_release,'quality':state['quality'],
                 'labels':{str(i):label for i,label in labels.items()},'warnings':notes,
                 'benchmark':{**benchmark,'wall_seconds':time.monotonic()-started}}
+        if classification:
+            result['abnormality_classification']=classification
+            (results/'abnormalities.json').write_text(json.dumps(classification))
+            artifacts['abnormalities']='abnormalities.json'
         mark('creating_preview','exporting')
         try:
             artifacts.update(generate_preview(directory/'model/native.nii.gz',results/'masks.nii.gz',results,result['labels'],viewer_context=viewer_context))
